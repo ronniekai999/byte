@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="340" viewBox="0 0 1200 340" role="img" aria-labelledby="title desc">
+  <title id="title">Byte — small arms, big answers.</title>
+  <desc id="desc">A green pixel-art T-rex beside the Byte wordmark on a midnight-purple background. Your tiny T-rex for the macOS notch.</desc>
+  <defs>
+    <linearGradient id="night" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#171827"/>
+      <stop offset="1" stop-color="#302958"/>
+    </linearGradient>
+    <radialGradient id="glow">
+      <stop offset="0" stop-color="#70B660" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#70B660" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="edge">
+      <stop offset="0" stop-color="#70B660"/>
+      <stop offset="0.55" stop-color="#C6DCA4"/>
+      <stop offset="1" stop-color="#9F8CE8"/>
+    </linearGradient>
+    <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M24 0H0V24" fill="none" stroke="#FFFFFF" stroke-opacity="0.035"/>
+    </pattern>
+    <clipPath id="frame"><rect width="1200" height="340" rx="20"/></clipPath>
+  </defs>
+  <g clip-path="url(#frame)">
+    <rect width="1200" height="340" fill="url(#night)"/>
+    <rect width="1200" height="340" fill="url(#grid)"/>
+    <ellipse cx="263" cy="177" rx="285" ry="225" fill="url(#glow)"/>
+    <!-- The notch motif is decorative brand artwork, rather than a UI screenshot. -->
+    <path d="M482 0H718V16Q718 34 700 34H500Q482 34 482 16Z" fill="#0E0F19"/>
+    <rect x="590" y="13" width="20" height="7" rx="3.5" fill="#262738"/>
+
+    <!-- Pixel-art mascot uses ByteSprite's green, belly, ridge, and outline palette. -->
+    <g transform="translate(112 69) scale(7)" shape-rendering="crispEdges">
+      <path d="M12 1H19V2H23V3H24V11H23V12H22V14H25V13H28V14H31V16H34V17H39V18H43V19H46V21H41V22H35V23H30V26H31V31H30V33H25V31H24V29H22V31H21V33H16V32H17V29H16V25H14V22H13V18H11V14H4V11H3V8H4V6H6V4H9V3H12Z" fill="#28482E"/>
+      <path d="M13 3H22V4H23V10H22V12H21V16H24V15H28V16H30V18H33V19H39V20H44V21H35V22H29V26H30V30H29V31H26V29H24V27H21V30H20V31H18V28H17V24H15V21H14V17H12V12H5V10H4V8H6V6H8V5H11V4H13Z" fill="#70B660"/>
+      <path d="M17 19H22V20H25V21H27V24H26V26H23V27H19V26H17V24H16V21H17Z" fill="#E2E9CA"/>
+      <path d="M13 2H17V1H18V2H20V3H13ZM23 13H25V12H26V13H28V14H25V15H23ZM30 16H32V17H34V18H31Z" fill="#529652"/>
+      <path d="M11 5H13V7H11Z" fill="#F8FAF4"/>
+      <path d="M12 5H13V7H12Z" fill="#1C281E"/>
+      <path d="M4 9H12V13H4Z" fill="#3C1E24"/>
+      <path d="M5 9H6V10H5ZM7 9H8V10H7ZM10 9H11V10H10ZM6 12H7V13H6Z" fill="#FAFAF5"/>
+      <path d="M7 7H8V8H7Z" fill="#28482E"/>
+      <path d="M15 20H16V23H15V22H14V21H15Z" fill="#529652"/>
+    </g>
+
+    <text x="485" y="103" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="13" font-weight="600" letter-spacing="4" fill="#B5ABC9">YOUR MACOS COMPANION</text>
+    <!-- A drawn 5-by-7 pixel wordmark stays consistent without external fonts. -->
+    <g transform="translate(487 126) scale(9)" fill="#C6DCA4" shape-rendering="crispEdges">
+      <path d="M0 0H4V1H5V3H4V4H5V6H4V7H0ZM1 1V3H4V1ZM1 4V6H4V4Z" fill-rule="evenodd"/>
+      <path d="M7 0H8V2H9V3H10V2H11V0H12V3H11V4H10V7H9V4H8V3H7Z"/>
+      <path d="M14 0H19V1H17V7H16V1H14Z"/>
+      <path d="M21 0H26V1H22V3H25V4H22V6H26V7H21Z"/>
+    </g>
+    <text x="485" y="235" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="28" font-weight="600" fill="#F6F4FA">Small arms. Big answers.</text>
+    <text x="485" y="272" font-family="system-ui, -apple-system, 'Segoe UI', sans-serif" font-size="17" fill="#BBB4D0">Your tiny T-rex for the macOS notch.</text>
+    <g fill="#9F8CE8" opacity="0.45">
+      <path d="M1064 83H1070V89H1064ZM1094 119H1100V125H1094ZM1040 238H1046V244H1040Z"/>
+      <path d="M78 45H82V49H78ZM1114 274H1118V278H1114Z"/>
+    </g>
+    <rect y="336" width="1200" height="4" fill="url(#edge)"/>
+  </g>
+</svg>

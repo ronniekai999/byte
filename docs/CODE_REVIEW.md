@@ -59,7 +59,8 @@ the actual state and an appropriate System Settings action. Eventually respect
   configured in `.github/workflows/ci.yml`. The [initial run and rerun](https://github.com/ronniekai999/byte/actions/runs/38015692899)
   failed before executing any job steps. GitHub provided no job logs, so the
   underlying runner failure could not be diagnosed through the connector.
-  Native build, test, and bundle results remain unverified; the PR is a draft.
+  Native build, test, and bundle results remain unverified. The import PR was
+  left as a draft at the time of this review.
   Linux grammar checks cannot replace the native compiler.
 - Live Anthropic requests, real Keychain prompts/migration, login-item behavior,
   rendering/audio, and monitor interaction were not exercised on Linux. Tests
