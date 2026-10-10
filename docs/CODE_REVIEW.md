@@ -56,8 +56,11 @@ the actual state and an appropriate System Settings action. Eventually respect
   images, corrupt-history recovery, prompt persistence, EOF, stop followed by a
   new send, cancellation during backoff, citations, and HTTP 401.
 - Native macOS compilation, tests, release bundling, and plist validation are
-  configured in `.github/workflows/ci.yml`. Check their GitHub result; Linux
-  grammar checks cannot replace the native compiler.
+  configured in `.github/workflows/ci.yml`. The [initial run and rerun](https://github.com/ronniekai999/byte/actions/runs/38015692899)
+  failed before executing any job steps. GitHub provided no job logs, so the
+  underlying runner failure could not be diagnosed through the connector.
+  Native build, test, and bundle results remain unverified; the PR is a draft.
+  Linux grammar checks cannot replace the native compiler.
 - Live Anthropic requests, real Keychain prompts/migration, login-item behavior,
   rendering/audio, and monitor interaction were not exercised on Linux. Tests
   stub networking and key storage and incur no API charges.

@@ -435,9 +435,12 @@ final class ByteModel: ObservableObject {
             turns = saved
             // Keep the original archive until the reopened chat is safely on disk.
             guard persist() else { turns = previous; return false }
-            try FileManager.default.removeItem(at: url)
             draft = ""
             clearPendingImage()
+            do { try FileManager.default.removeItem(at: url) }
+            catch {
+                storageError = "The chat was reopened, but its archive copy couldn't be removed. \(error.localizedDescription)"
+            }
             refreshHasArchive()
             return true
         } catch {
