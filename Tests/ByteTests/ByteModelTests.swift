@@ -1,13 +1,18 @@
 import AppKit
+import CryptoKit
 import XCTest
 @testable import Byte
 
 private final class MemoryKeyStore: APIKeyStoring {
     var key: String?
+    var failRead = false
     var failSave = false
     var failRemove = false
     init(key: String? = "test-key") { self.key = key }
-    func read() throws -> String? { key }
+    func read() throws -> String? {
+        if failRead { throw CocoaError(.fileReadNoPermission) }
+        return key
+    }
     func save(_ key: String) throws {
         if failSave { throw CocoaError(.fileWriteNoPermission) }
         self.key = key
@@ -134,6 +139,194 @@ final class ByteModelTests: XCTestCase {
         while model.isLoadingModels && Date() < deadline { try await Task.sleep(nanoseconds: 10_000_000) }
         XCTAssertFalse(model.isLoadingModels)
         XCTAssertTrue(model.canSend)
+    }
+
+    @MainActor
+    func testChatGPTSignOutWaitsForInFlightRotationBeforeRevoking() async throws {
+        let f = try Fixture()
+        defer { f.cleanup() }
+        let account = try seedChatGPTAccount(f, expired: true)
+        let auth = chatGPTAuth(f)
+        let started = expectation(description: "Refresh reached the provider")
+        let discovery = chatGPTDiscovery
+        var pendingRefresh: StubURLProtocol?
+        var revokedToken: String?
+        StubURLProtocol.handler = { stub in
+            switch stub.request.url!.path {
+            case "/.well-known/openid-configuration": stub.reply(discovery)
+            case "/api/accounts/oauth/token":
+                pendingRefresh = stub
+                started.fulfill()
+            case "/api/accounts/oauth/revoke":
+                let body = String(decoding: stub.requestBody() ?? Data(), as: UTF8.self)
+                revokedToken = URLComponents(string: "https://example.invalid/?" + body)?
+                    .queryItems?.first(where: { $0.name == "token" })?.value
+                stub.reply("")
+            default: XCTFail("Unexpected request")
+            }
+        }
+        let refresh = Task { try await auth.accessToken(for: account.clientID) }
+        await fulfillment(of: [started], timeout: 2)
+        let signOut = Task { try await auth.signOut() }
+        // Allow sign-out to join the refresh while its response is still pending.
+        try await Task.sleep(nanoseconds: 50_000_000)
+        pendingRefresh?.reply(#"{"access_token":"replacement-access","refresh_token":"replacement-refresh","token_type":"Bearer","expires_in":3600}"#)
+        let token = try await refresh.value
+        try await signOut.value
+        XCTAssertEqual(token, "replacement-access")
+        XCTAssertEqual(revokedToken, "replacement-refresh")
+        XCTAssertFalse(auth.isSignedIn)
+        let stored = try JSONDecoder().decode([ChatGPTAccount].self, from: Data(f.chatGPTKeys.key!.utf8))
+        XCTAssertNil(stored.first?.tokens)
+    }
+
+    @MainActor
+    func testFailedChatGPTSignOutDoesNotLeaveModelLoadingStuck() async throws {
+        let f = try Fixture()
+        defer { f.cleanup() }
+        let started = expectation(description: "Model catalog started")
+        StubURLProtocol.handler = { _ in started.fulfill() }
+        let model = try chatGPTModel(f)
+        defer { model.prepareForTermination() }
+        await fulfillment(of: [started], timeout: 2)
+        XCTAssertTrue(model.isLoadingModels)
+        f.chatGPTKeys.failRead = true
+        model.signOut()
+        let deadline = Date().addingTimeInterval(2)
+        while model.isConnecting && Date() < deadline { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertFalse(model.isConnecting)
+        XCTAssertNotNil(model.connectionError)
+        XCTAssertFalse(model.isLoadingModels, "Refresh models must remain available after sign-out fails.")
+        f.chatGPTKeys.failRead = false
+        StubURLProtocol.handler = { $0.reply(#"{"models":[{"slug":"account-model","display_name":"Account model","visibility":"list"}]}"#) }
+        model.reloadChatGPTModels()
+        try await waitForModels(model)
+        XCTAssertNil(model.connectionError)
+    }
+
+    @MainActor
+    func testExpiredAuthorizationCodeRetriesWithIssuedRegistrationAndFreshPKCE() async throws {
+        let f = try Fixture()
+        defer { f.cleanup() }
+        let saved = try seedChatGPTAccount(f)
+        let auth = chatGPTAuth(f)
+        let signingKey = P256.Signing.PrivateKey()
+        let publicBytes = signingKey.publicKey.x963Representation
+        let jwks = String(decoding: try JSONSerialization.data(withJSONObject: ["keys": [[
+            "kid": "sign-in-test", "alg": "ES256", "kty": "EC", "crv": "P-256", "use": "sig",
+            "x": Data(publicBytes[1..<33]).base64URL, "y": Data(publicBytes[33..<65]).base64URL
+        ]]]), as: UTF8.self)
+        let discovery = chatGPTDiscovery.replacingOccurrences(of: "RS256", with: "ES256")
+        var authorizations: [[String: String]] = []
+        var callbackTasks: [Task<Void, Error>] = []
+        var exchanges = 0
+        StubURLProtocol.handler = { stub in
+            switch stub.request.url!.path {
+            case "/.well-known/openid-configuration": stub.reply(discovery)
+            case "/.well-known/jwks.json": stub.reply(jwks)
+            case "/api/accounts/oauth/token":
+                exchanges += 1
+                let request = authorizations[exchanges - 1]
+                let body = String(decoding: stub.requestBody() ?? Data(), as: UTF8.self)
+                let fields = Dictionary(uniqueKeysWithValues: URLComponents(string: "https://example.invalid/?" + body)!
+                    .queryItems!.map { ($0.name, $0.value ?? "") })
+                XCTAssertEqual(fields["client_id"], "oaiapp_registered")
+                XCTAssertEqual(fields["code"], "code-\(exchanges)")
+                XCTAssertEqual(fields["redirect_uri"], request["redirect_uri"])
+                XCTAssertEqual(fields["resource"], ChatGPTAuth.resource)
+                XCTAssertEqual(Data(SHA256.hash(data: Data((fields["code_verifier"] ?? "").utf8))).base64URL,
+                               request["code_challenge"])
+                if exchanges == 1 {
+                    stub.reply(#"{"error":"invalid_grant"}"#, status: 400)
+                    return
+                }
+                do {
+                    let header = try JSONSerialization.data(withJSONObject: ["alg": "ES256", "kid": "sign-in-test"]).base64URL
+                    let claims: [String: Any] = ["iss": "https://auth.openai.com", "aud": "oaiapp_registered",
+                        "sub": "new-user", "email": "new@example.com", "nonce": request["nonce"]!,
+                        "iat": Date().timeIntervalSince1970, "exp": Date().addingTimeInterval(3600).timeIntervalSince1970]
+                    let payload = try JSONSerialization.data(withJSONObject: claims).base64URL
+                    let message = "\(header).\(payload)"
+                    let id = try message + "." + signingKey.signature(for: Data(message.utf8)).rawRepresentation.base64URL
+                    let tokens: [String: Any] = ["access_token": "signed-in-access", "refresh_token": "signed-in-refresh",
+                        "id_token": id, "token_type": "Bearer", "expires_in": 3600, "scope": ChatGPTAuth.scopes]
+                    stub.reply(String(decoding: try JSONSerialization.data(withJSONObject: tokens), as: UTF8.self))
+                } catch { XCTFail("Couldn't build test token: \(error)"); stub.reply("{}", status: 500) }
+            default: XCTFail("Unexpected request")
+            }
+        }
+        try await auth.signIn { url in
+            let fields = Dictionary(uniqueKeysWithValues: URLComponents(url: url, resolvingAgainstBaseURL: false)!
+                .queryItems!.map { ($0.name, $0.value ?? "") })
+            authorizations.append(fields)
+            XCTAssertEqual(auth.activeClientID, saved.clientID, "Keep the active account until the new identity is verified.")
+            var callback = URLComponents(string: fields["redirect_uri"]!)!
+            callback.queryItems = [.init(name: "state", value: fields["state"]),
+                                   .init(name: "code", value: "code-\(authorizations.count)")]
+            if authorizations.count == 1 { callback.queryItems!.append(.init(name: "client_id", value: "oaiapp_registered")) }
+            let callbackURL = callback.url!
+            callbackTasks.append(Task {
+                var request = URLRequest(url: callbackURL)
+                request.timeoutInterval = 5
+                let (_, response) = try await URLSession.shared.data(for: request)
+                XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+            })
+            return true
+        }
+        for task in callbackTasks { try await task.value }
+        XCTAssertEqual(exchanges, 2)
+        XCTAssertEqual(authorizations.count, 2)
+        XCTAssertEqual(authorizations.first?["client_id"], "dynamic_agent_client")
+        XCTAssertEqual(authorizations.last?["client_id"], "oaiapp_registered")
+        XCTAssertNil(authorizations.last?["agent_name_hint"])
+        for key in ["state", "nonce", "code_challenge"] { XCTAssertNotEqual(authorizations.first?[key], authorizations.last?[key]) }
+        XCTAssertEqual(authorizations.first?["ext_agent_host_id"], authorizations.last?["ext_agent_host_id"])
+        XCTAssertEqual(auth.activeAccount?.subject, "new-user")
+        XCTAssertEqual(auth.accounts.count, 2)
+        XCTAssertEqual(auth.accounts.first(where: { $0.clientID == saved.clientID })?.tokens?.accessToken, "test-access")
+        XCTAssertTrue(auth.canUsePlan)
+    }
+
+    @MainActor
+    func testInvalidAuthorizationCodeRecoveryStopsAfterOneFreshAttempt() async throws {
+        let f = try Fixture()
+        defer { f.cleanup() }
+        let auth = chatGPTAuth(f)
+        let discovery = chatGPTDiscovery
+        var exchanges = 0
+        var callbacks: [Task<Void, Error>] = []
+        StubURLProtocol.handler = { stub in
+            if stub.request.url!.path == "/.well-known/openid-configuration" { stub.reply(discovery) }
+            else {
+                exchanges += 1
+                stub.reply(#"{"error":"invalid_grant"}"#, status: 400)
+            }
+        }
+        do {
+            try await auth.signIn { url in
+                let fields = Dictionary(uniqueKeysWithValues: URLComponents(url: url, resolvingAgainstBaseURL: false)!
+                    .queryItems!.map { ($0.name, $0.value ?? "") })
+                var callback = URLComponents(string: fields["redirect_uri"]!)!
+                callback.queryItems = [.init(name: "state", value: fields["state"]),
+                    .init(name: "code", value: "expired"), .init(name: "client_id", value: "oaiapp_registered")]
+                let callbackURL = callback.url!
+                callbacks.append(Task {
+                    var request = URLRequest(url: callbackURL)
+                    request.timeoutInterval = 5
+                    _ = try await URLSession.shared.data(for: request)
+                })
+                return true
+            }
+            XCTFail("Repeated invalid codes must stop sign-in.")
+        } catch { XCTAssertTrue(error.localizedDescription.contains("HTTP 400")) }
+        for task in callbacks { try await task.value }
+        XCTAssertEqual(exchanges, 2)
+        XCTAssertEqual(callbacks.count, 2)
+        XCTAssertTrue(auth.accounts.isEmpty)
+        XCTAssertNil(f.chatGPTKeys.key)
+        XCTAssertFalse(auth.isSigningIn)
+        let lease = try await f.chatGPTLock.acquire(timeout: 0)
+        lease.release()
     }
 
     @MainActor

@@ -270,9 +270,9 @@ swift test
 plutil -lint Byte.app/Contents/Info.plist
 ```
 
-The [macOS workflow](.github/workflows/ci.yml) runs the same sequence. All **47 regression tests** passed on macOS 14 with Swift 5.10, along with the debug build, release bundle, and plist validation. Coverage includes request options, usage, persistence, archives, key migration, images, interrupted streams, cancellation, citations, and link handling, plus ChatGPT callback validation, identity signatures/claims, account separation, coordinated token rotation, failed-save recovery, catalog selection, plan limits, and request contracts. Tests use temporary directories, stubbed HTTP streams, and in-memory credential stores; they do not make live provider calls or use your real Keychain.
+The [macOS workflow](.github/workflows/ci.yml) runs the same sequence. All **51 regression tests** passed on macOS 14 with Swift 5.10, along with the debug build, release bundle, and plist validation. Coverage includes request options, usage, persistence, archives, key migration, images, interrupted streams, cancellation, citations, and link handling, plus ChatGPT callback validation, identity signatures/claims, account separation, coordinated token rotation, sign-out during refresh, failed-save recovery, catalog retry, complete loopback sign-in and expired-code recovery, plan limits, and request contracts. Tests use temporary directories, stubbed HTTP streams, and in-memory credential stores; they do not make live provider calls or use your real Keychain.
 
-See the [passing native run](https://github.com/ronniekai999/byte/actions/runs/38078991885) and [code review](docs/CODE_REVIEW.md) for the evidence and remaining manual checks. Live provider sign-in, real Keychain prompts, and UI/audio behavior remain unverified.
+See the [passing native run](https://github.com/ronniekai999/byte/actions/runs/38094130147) and [readiness review](docs/CODE_REVIEW.md#readiness-review--october-10-2026) for the evidence and hands-on test steps. Live provider sign-in, real Keychain prompts, Login Items approval, and UI/audio behavior remain unverified.
 
 ### Source map
 

@@ -21,7 +21,7 @@ New regression coverage includes callback transaction/client validation, ES256
 and RS256 identity verification, loopback callbacks, separate account records,
 host-ID reuse, rotating refresh tokens, subscription request parameters, live
 catalog selection, completed/interrupted streaming, and usage-limit handling.
-All 47 native regression tests, the debug build, release bundle, and plist
+The initial 47 native regression tests, debug build, release bundle, and plist
 validation passed on macOS 14 with Swift 5.10 in the
 [PR workflow](https://github.com/ronniekai999/byte/actions/runs/38078991885).
 Real browser/Keychain/provider behavior still needs manual verification;
@@ -55,6 +55,40 @@ preserving other accounts, and revoking a pending replacement. On Linux, targete
 checks against the extracted production auth core and the production lock passed,
 including two separate processes racing with stale credentials. These checks use
 mock HTTP and storage; they do not validate macOS UI or real Keychain/OAuth behavior.
+
+## Readiness review — October 10, 2026
+
+The follow-up review in [PR #3](https://github.com/ronniekai999/byte/pull/3)
+addressed four further P2 recovery issues:
+
+| Trigger | Problem | Fix |
+| --- | --- | --- |
+| Sign out while token refresh is in flight | Cancelling the refresh could discard the replacement and revoke the stale token instead. | Let rotation settle, then revoke the latest saved or pending token before clearing it. |
+| First-time authorization code expires or was consumed | The issued client ID was lost, so retrying created another registration. | Retry authorization once with the issued client ID and fresh state, nonce, PKCE, and callback URI. Keep the active account until the new identity is verified. |
+| Sign out during model loading, then Keychain reading fails | The catalog request was cancelled but its loading flag stayed set, disabling Refresh models. | Clear loading state when cancelling, so catalog retry remains available after failure. |
+| Disable launch at login while macOS approval is pending | The toggle appeared off without unregistering the pending item; errors and approval requirements were hidden. | Unregister pending items, show approval and error feedback, and reload status when returning from System Settings. |
+
+Four new native regression tests cover refresh/sign-out ordering, failed sign-out
+followed by catalog retry, a complete loopback sign-in with signed ID-token
+verification and expired-code recovery, and bounded retries after repeated invalid
+codes. All **51 tests**, the debug build, release bundle, and plist validation
+passed in the [macOS workflow](https://github.com/ronniekai999/byte/actions/runs/38094130147).
+A separate mock-network harness reproduced the refresh cancellation bug against
+the original auth code and passed against the fix. Neither test setup uses live
+provider credentials or the user's Keychain.
+
+Before treating this as a release, run these checks with the installed app on a Mac:
+
+1. Complete and cancel real ChatGPT browser sign-in. Relaunch and confirm the saved
+   account reconnects; switch accounts and verify the model picker updates.
+2. Send text and an image, use web search with an eligible model, stop a reply, and
+   send another message. Confirm failures remain separate from assistant answers.
+3. Sign out during model loading and reconnect. If a Keychain prompt is denied,
+   restore access and check that the offered retry recovers the connection.
+4. Exercise the Claude API-key connection and switch providers between requests.
+5. Enable launch at login, follow any macOS approval prompt, and disable it both
+   before and after approval. Check small/multiple displays, keyboard access,
+   VoiceOver, and audio as part of the existing UI checks.
 
 ## Earlier review
 
@@ -99,23 +133,22 @@ running app has not had a visual or accessibility audit in this workspace.
 | 7 | Readability and accessibility | Validate VoiceOver and keyboard control on a Mac, honor Reduce Motion, allow panel resizing, and preserve scroll position when reading older replies. Current text is small and scrolling follows every token. |
 | 8 | Smaller responsibilities | Separate persistence, streaming, pet simulation, and views while preserving tests. `ByteModel` and `ByteView` still own many unrelated responsibilities. |
 
-Login-item state also needs attention: `.requiresApproval` appears on, while the
-existing disable handler unregisters only `.enabled`. Errors are swallowed. Show
-the actual state and an appropriate System Settings action. Eventually respect
-`Retry-After` and server-tool continuation signals instead of local backoff alone.
+The login-item state handling is addressed in the readiness review above; real
+system approval still needs manual verification. Future request improvements
+include respecting `Retry-After` and server-tool continuation signals.
 
 ## Validation
 
 - Swift grammar parsing passed for the manifest, app sources, and tests.
 - Bundle shell syntax, workflow YAML, and Git whitespace checks passed.
 - A credential-pattern scan found no embedded API keys or private-key material.
-- 47 native regression tests passed, covering model options, cumulative usage, legacy decoding,
+- 51 native regression tests passed, covering model options, cumulative usage, legacy decoding,
   web links, archive collisions, failed writes, key migration and failures,
   images, corrupt-history recovery, prompt persistence, EOF, stop followed by a
   new send, cancellation during backoff, citations, HTTP 401, and the ChatGPT
   connection and recovery cases described above.
 - Native macOS compilation, all tests, release bundling, and plist validation
-  passed in the [PR workflow](https://github.com/ronniekai999/byte/actions/runs/38078991885)
+  passed in the [readiness workflow](https://github.com/ronniekai999/byte/actions/runs/38094130147)
   on macOS 14.8.9/arm64 with Apple Swift 5.10. Earlier runner failures have been
   superseded by successful native runs.
 - Live provider sign-in and requests, real Keychain prompts/migration, login-item
