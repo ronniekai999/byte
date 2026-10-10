@@ -26,7 +26,7 @@ Click to chat. Hover to care. Drag to make yourself at home.
 
 **The pet works without an AI connection.** For replies, use an eligible ChatGPT plan through browser sign-in, or connect your own Anthropic API key. Credentials stay in macOS Keychain. Byte is built with SwiftUI and AppKit, with no third-party runtime dependencies.
 
-> **Source preview:** Byte is currently built from source. Bundles produced by this repository are unsigned, and native macOS build, test, and runtime validation remain outstanding. See the [review and validation notes](docs/CODE_REVIEW.md#validation) for the current evidence.
+> **Source preview:** Byte is currently built from source. Bundles produced by this repository are unsigned. Automated macOS build, test, and bundle checks pass; real sign-in and UI behavior still need manual verification. See the [review and validation notes](docs/CODE_REVIEW.md#validation) for the current evidence.
 
 <a id="features"></a>
 ## ✨ What you get
@@ -270,9 +270,9 @@ swift test
 plutil -lint Byte.app/Contents/Info.plist
 ```
 
-The [macOS workflow](.github/workflows/ci.yml) is configured to run the same sequence. Regression tests cover request options, usage, persistence, archives, key migration, images, interrupted streams, cancellation, citations, and link handling, plus ChatGPT callback validation, identity signatures/claims, account separation, token rotation, catalog selection, plan limits, and request contracts. Tests use temporary directories, stubbed HTTP streams, and in-memory credential stores; they do not make live provider calls or use your real Keychain.
+The [macOS workflow](.github/workflows/ci.yml) runs the same sequence. All **47 regression tests** passed on macOS 14 with Swift 5.10, along with the debug build, release bundle, and plist validation. Coverage includes request options, usage, persistence, archives, key migration, images, interrupted streams, cancellation, citations, and link handling, plus ChatGPT callback validation, identity signatures/claims, account separation, coordinated token rotation, failed-save recovery, catalog selection, plan limits, and request contracts. Tests use temporary directories, stubbed HTTP streams, and in-memory credential stores; they do not make live provider calls or use your real Keychain.
 
-A passing native build/test/bundle run has **not yet been established**. Linux syntax checks cannot validate AppKit, SwiftUI, Security, or AVFoundation. Read the [code review](docs/CODE_REVIEW.md) for findings, remaining priorities, and validation limits.
+See the [passing native run](https://github.com/ronniekai999/byte/actions/runs/38078991885) and [code review](docs/CODE_REVIEW.md) for the evidence and remaining manual checks. Live provider sign-in, real Keychain prompts, and UI/audio behavior remain unverified.
 
 ### Source map
 

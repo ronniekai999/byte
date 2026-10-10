@@ -21,9 +21,11 @@ New regression coverage includes callback transaction/client validation, ES256
 and RS256 identity verification, loopback callbacks, separate account records,
 host-ID reuse, rotating refresh tokens, subscription request parameters, live
 catalog selection, completed/interrupted streaming, and usage-limit handling.
-These native tests and real browser/Keychain/provider behavior still require
-macOS validation. Linux Swift grammar checks do not establish that the macOS app
-compiles or that real-account eligibility has been accepted.
+All 47 native regression tests, the debug build, release bundle, and plist
+validation passed on macOS 14 with Swift 5.10 in the
+[PR workflow](https://github.com/ronniekai999/byte/actions/runs/38078991885).
+Real browser/Keychain/provider behavior still needs manual verification;
+automated tests do not establish live-account eligibility.
 
 Provider references:
 
@@ -107,19 +109,17 @@ the actual state and an appropriate System Settings action. Eventually respect
 - Swift grammar parsing passed for the manifest, app sources, and tests.
 - Bundle shell syntax, workflow YAML, and Git whitespace checks passed.
 - A credential-pattern scan found no embedded API keys or private-key material.
-- 26 regression tests cover model options, cumulative usage, legacy decoding,
+- 47 native regression tests passed, covering model options, cumulative usage, legacy decoding,
   web links, archive collisions, failed writes, key migration and failures,
   images, corrupt-history recovery, prompt persistence, EOF, stop followed by a
-  new send, cancellation during backoff, citations, and HTTP 401.
-- Native macOS compilation, tests, release bundling, and plist validation are
-  configured in `.github/workflows/ci.yml`. The [initial run and rerun](https://github.com/ronniekai999/byte/actions/runs/38015692899)
-  failed before executing any job steps. GitHub provided no job logs, so the
-  underlying runner failure could not be diagnosed through the connector.
-  Native build, test, and bundle results remain unverified. The import PR was
-  left as a draft at the time of this review.
-  Linux grammar checks cannot replace the native compiler.
-- Live Anthropic requests, real Keychain prompts/migration, login-item behavior,
-  rendering/audio, and monitor interaction were not exercised on Linux. Tests
+  new send, cancellation during backoff, citations, HTTP 401, and the ChatGPT
+  connection and recovery cases described above.
+- Native macOS compilation, all tests, release bundling, and plist validation
+  passed in the [PR workflow](https://github.com/ronniekai999/byte/actions/runs/38078991885)
+  on macOS 14.8.9/arm64 with Apple Swift 5.10. Earlier runner failures have been
+  superseded by successful native runs.
+- Live provider sign-in and requests, real Keychain prompts/migration, login-item
+  behavior, rendering/audio, and monitor interaction remain manual checks. Tests
   stub networking and key storage and incur no API charges.
 
 The cost meter is approximate: cache-token price tiers and usage lost during a
