@@ -1,9 +1,15 @@
 import Foundation
 import SwiftUI
 import AppKit
+import Combine
 
 @MainActor
 final class ByteModel: ObservableObject {
+
+    enum AIProvider: String, CaseIterable {
+        case anthropic, chatGPT
+        var label: String { self == .anthropic ? "Claude · API key" : "ChatGPT · your plan" }
+    }
 
     struct Turn: Identifiable, Codable {
         var id = UUID()
@@ -56,6 +62,13 @@ final class ByteModel: ObservableObject {
     @Published var keyInput = ""           // text in the sign-in field
     @Published var hasArchive = false      // at least one archived thread exists
     @Published var storageError: String? = nil
+    @Published private(set) var provider: AIProvider
+    @Published private(set) var chatGPTModels: [ChatGPTModelChoice] = []
+    @Published private(set) var isLoadingModels = false
+    @Published private(set) var isConnecting = false
+    @Published private(set) var chatGPTUsageBlocked = false
+    @Published var connectionError: String?
+    let chatGPT: ChatGPTAuth
 
     // Pending image attachment (vision), waiting to be sent with the next message.
     @Published var pendingImage: NSImage? = nil
@@ -78,10 +91,15 @@ final class ByteModel: ObservableObject {
     private var activeRequestID: UUID?
     private var activeResponseID: UUID?
     private var historyNeedsRecovery = false
+    private var authObservation: AnyCancellable?
+    private var connectionTask: Task<Void, Never>?
+    private var catalogTask: Task<Void, Never>?
 
     init(configDirectory: URL? = nil, defaults: UserDefaults = .standard,
          keyStore: any APIKeyStoring = KeychainAPIKeyStore(),
-         session: URLSession = .shared,
+         chatGPTStore: any APIKeyStoring = KeychainAPIKeyStore(service: "com.ronnie.byte.chatgpt", account: "accounts"),
+         chatGPTCredentialLock: ChatGPTCredentialLock = ChatGPTCredentialLock(),
+         session: URLSession = ProviderSession.shared,
          environment: [String: String] = ProcessInfo.processInfo.environment,
          now: @escaping () -> Date = Date.init) {
         self.configDirectory = configDirectory ?? URL(fileURLWithPath:
@@ -91,6 +109,9 @@ final class ByteModel: ObservableObject {
         self.session = session
         self.environment = environment
         self.now = now
+        self.chatGPT = ChatGPTAuth(store: chatGPTStore, defaults: defaults, session: session,
+                                  credentialLock: chatGPTCredentialLock)
+        self.provider = AIProvider(rawValue: defaults.string(forKey: "byte.provider") ?? "") ?? .anthropic
         if configDirectory == nil { migrateFromFinnIfNeeded() }
         migrateAPIKeyIfNeeded()
         defaults.register(defaults: ["byte.checkins": true])
@@ -98,6 +119,8 @@ final class ByteModel: ObservableObject {
         loadHistory()
         refreshHasArchive()
         loadPet()
+        authObservation = chatGPT.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        if provider == .chatGPT, chatGPT.canUsePlan { reloadChatGPTModels() }
     }
 
     /// One-time move of the old ~/.config/finn data directory (API key, history,
@@ -284,7 +307,115 @@ final class ByteModel: ObservableObject {
     /// Read live from Settings (defaults: Sonnet 4.6, high effort, web search on,
     /// lots of puns). Computed so changes in the settings popover take effect on the
     /// next message without restarting Byte.
-    var model: String { defaults.string(forKey: "byte.model") ?? "claude-sonnet-4-6" }
+    var model: String {
+        provider == .chatGPT ? (defaults.string(forKey: "byte.chatGPT.model") ?? "ChatGPT")
+            : (defaults.string(forKey: "byte.model") ?? "claude-sonnet-4-6")
+    }
+    var hasConnection: Bool { provider == .anthropic ? hasKey : chatGPT.canUsePlan }
+    var canSend: Bool {
+        !isConnecting && hasConnection && (provider == .anthropic ||
+            (!chatGPTUsageBlocked && chatGPTModels.contains { $0.slug == model }))
+    }
+
+    func selectProvider(_ value: AIProvider) {
+        guard !isStreaming, !isConnecting else { return }
+        if provider != value {
+            sessionCost = 0; sessionInTok = 0; sessionOutTok = 0; sessionSearches = 0
+        }
+        provider = value
+        defaults.set(value.rawValue, forKey: "byte.provider")
+        connectionError = nil
+        if value == .chatGPT, chatGPT.canUsePlan { reloadChatGPTModels() }
+        else { catalogTask?.cancel(); isLoadingModels = false }
+    }
+
+    func selectChatGPTAccount(_ clientID: String) {
+        guard !isStreaming, !isConnecting else { return }
+        chatGPT.selectAccount(clientID)
+        chatGPTUsageBlocked = false
+        sessionInTok = 0; sessionOutTok = 0; sessionSearches = 0
+        reloadChatGPTModels()
+    }
+
+    func retryChatGPTPlanUsage() { chatGPTUsageBlocked = false }
+
+    func retryChatGPTCredentialSave() {
+        guard !isStreaming, !isConnecting else { return }
+        connectionError = nil
+        do { try chatGPT.retryPendingSave(); reloadChatGPTModels() }
+        catch { connectionError = error.localizedDescription }
+    }
+
+    func selectChatGPTModel(_ slug: String) {
+        guard !isStreaming, chatGPTModels.contains(where: { $0.slug == slug }) else { return }
+        objectWillChange.send()
+        defaults.set(slug, forKey: "byte.chatGPT.model")
+    }
+
+    func signInChatGPT(addAccount: Bool = false) {
+        guard !isConnecting, !isStreaming else { return }
+        isConnecting = true
+        connectionError = nil
+        let accountID = addAccount ? nil : chatGPT.activeClientID
+        connectionTask = Task {
+            defer { isConnecting = false; connectionTask = nil }
+            do {
+                try await chatGPT.signIn(accountID: accountID, openBrowser: { NSWorkspace.shared.open($0) })
+                try Task.checkCancellation()
+                if provider != .chatGPT {
+                    sessionCost = 0; sessionInTok = 0; sessionOutTok = 0; sessionSearches = 0
+                }
+                provider = .chatGPT
+                chatGPTUsageBlocked = false
+                defaults.set(provider.rawValue, forKey: "byte.provider")
+                reloadChatGPTModels()
+            } catch is CancellationError { /* The user cancelled; keep their existing account. */ }
+            catch { connectionError = error.localizedDescription }
+        }
+    }
+
+    func cancelChatGPTSignIn() {
+        connectionTask?.cancel()
+        chatGPT.cancelSignIn()
+    }
+
+    func reloadChatGPTModels() {
+        catalogTask?.cancel()
+        chatGPTModels = []
+        isLoadingModels = false
+        guard let clientID = chatGPT.activeClientID, chatGPT.canUsePlan else { return }
+        isLoadingModels = true
+        catalogTask = Task {
+            do {
+                let token = try await chatGPT.accessToken(for: clientID)
+                try Task.checkCancellation()
+                var request = URLRequest(url: URL(string: "https://api.openai.com/v1/models")!)
+                request.timeoutInterval = 30
+                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                let (data, response) = try await session.data(for: request)
+                try Task.checkCancellation()
+                guard chatGPT.activeClientID == clientID else { return }
+                guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                    throw ChatGPTConnectionError("Couldn't load your ChatGPT models. Retry in Settings, or Continue with ChatGPT again.")
+                }
+                struct Catalog: Decodable { let models: [ChatGPTModelChoice] }
+                let choices = try JSONDecoder().decode(Catalog.self, from: data).models.filter { $0.visibility == "list" }
+                guard let first = choices.first else {
+                    throw ChatGPTConnectionError("No chat models are available for this ChatGPT account.")
+                }
+                chatGPTModels = choices
+                if !choices.contains(where: { $0.slug == model }) {
+                    defaults.set(first.slug, forKey: "byte.chatGPT.model")
+                }
+                connectionError = nil
+            } catch is CancellationError { return }
+            catch {
+                guard !Task.isCancelled, chatGPT.activeClientID == clientID else { return }
+                connectionError = error.localizedDescription
+            }
+            if !Task.isCancelled { isLoadingModels = false }
+        }
+    }
     private var effort: String { defaults.string(forKey: "byte.effort") ?? "high" }
     private var webSearchOn: Bool { (defaults.object(forKey: "byte.webSearch") as? Bool) ?? true }
     private var punLevel: Int { (defaults.object(forKey: "byte.puns") as? Int) ?? 2 }
@@ -563,7 +694,7 @@ final class ByteModel: ObservableObject {
 
     func send() {
         let prompt = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !isStreaming, !prompt.isEmpty || pendingImageB64 != nil else { return }
+        guard !isStreaming, canSend, !prompt.isEmpty || pendingImageB64 != nil else { return }
         draft = ""
         turns.append(Turn(role: .user, text: prompt,
                           imageType: pendingImageType,
@@ -583,10 +714,19 @@ final class ByteModel: ObservableObject {
         let responseID = turns[turns.count - 1].id
         activeRequestID = requestID
         activeResponseID = responseID
-        let configuration = AnthropicRequestConfiguration(
-            model: model, effort: effort, webSearch: webSearchOn, system: datedSystemPrompt())
-        streamTask = Task {
-            await stream(requestID: requestID, responseID: responseID, configuration: configuration)
+        if provider == .chatGPT, let clientID = chatGPT.activeClientID {
+            let configuration = ChatGPTRequestConfiguration(model: model, webSearch: webSearchOn, system: datedSystemPrompt())
+            let input = ChatGPTRequestConfiguration.input(turns: turns)
+            streamTask = Task {
+                await streamChatGPT(requestID: requestID, responseID: responseID, clientID: clientID,
+                                    configuration: configuration, input: input)
+            }
+        } else {
+            let configuration = AnthropicRequestConfiguration(
+                model: model, effort: effort, webSearch: webSearchOn, system: datedSystemPrompt())
+            streamTask = Task {
+                await stream(requestID: requestID, responseID: responseID, configuration: configuration)
+            }
         }
     }
 
@@ -604,7 +744,7 @@ final class ByteModel: ObservableObject {
         pendingImageB64 = b64
         pendingImage = image
         // a non-vision model can't see it — switch to the default vision model
-        if !Self.visionModels.contains(model) {
+        if provider == .anthropic, !Self.visionModels.contains(model) {
             defaults.set("claude-sonnet-4-6", forKey: "byte.model")
         }
     }
@@ -698,6 +838,17 @@ final class ByteModel: ObservableObject {
 
     func signOut() {
         stopResponse()
+        guard !isConnecting else { return }
+        if provider == .chatGPT {
+            catalogTask?.cancel()
+            isConnecting = true
+            connectionTask = Task {
+                defer { isConnecting = false; connectionTask = nil }
+                do { try await chatGPT.signOut(); chatGPTModels = [] }
+                catch { connectionError = "Couldn't clear your ChatGPT connection from Keychain. \(error.localizedDescription)" }
+            }
+            return
+        }
         do {
             try keyStore.remove()
             if FileManager.default.fileExists(atPath: legacyKeyURL.path) {
@@ -713,6 +864,8 @@ final class ByteModel: ObservableObject {
 
     func prepareForTermination() {
         stopResponse()
+        cancelChatGPTSignIn()
+        catalogTask?.cancel()
         persist()
         persistPet(force: true)
     }
@@ -921,6 +1074,136 @@ final class ByteModel: ObservableObject {
         }
         // EOF is not success: the provider must explicitly finish with message_stop.
         return result(.fail("The connection ended before the reply finished. Try again."))
+    }
+
+    private func streamChatGPT(requestID: UUID, responseID: UUID, clientID: String,
+                               configuration: ChatGPTRequestConfiguration, input: [[String: Any]]) async {
+        do {
+            let token = try await chatGPT.accessToken(for: clientID)
+            guard isCurrent(requestID) else { return }
+            var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 120
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+            request.httpBody = try JSONSerialization.data(withJSONObject: configuration.payload(input: input))
+            for attempt in 1...3 {
+                guard isCurrent(requestID) else { return }
+                let result = await runChatGPTOnce(request: request, requestID: requestID, responseID: responseID)
+                guard isCurrent(requestID) else { return }
+                // This route uses the ChatGPT plan/credits. Never price it as API billing.
+                sessionInTok += result.usage.inputTokens
+                sessionOutTok += result.usage.outputTokens
+                sessionSearches += result.usage.searches
+                switch result.outcome {
+                case .done:
+                    finish(requestID: requestID, responseID: responseID, failure: nil)
+                    return
+                case .cancelled: return
+                case .fail(let message):
+                    finish(requestID: requestID, responseID: responseID, failure: message)
+                    return
+                case .retry(let message):
+                    if attempt == 3 {
+                        finish(requestID: requestID, responseID: responseID, failure: message)
+                        return
+                    }
+                    try await Task.sleep(nanoseconds: UInt64(attempt) * 800_000_000)
+                }
+            }
+        } catch {
+            guard isCurrent(requestID) else { return }
+            finish(requestID: requestID, responseID: responseID, failure: error.localizedDescription)
+        }
+    }
+
+    private func runChatGPTOnce(request: URLRequest, requestID: UUID, responseID: UUID) async -> Attempt {
+        var usage = AnthropicUsage()
+        var emittedText = false
+        var lastSave = Date()
+        func result(_ outcome: Outcome) -> Attempt { Attempt(outcome: outcome, usage: usage) }
+        func source(_ annotation: [String: Any]) {
+            guard annotation["type"] as? String == "url_citation", let url = annotation["url"] as? String else { return }
+            addSource(title: annotation["title"] as? String ?? url, url: url, responseID: responseID)
+        }
+        do {
+            let (bytes, response) = try await session.bytes(for: request)
+            guard isCurrent(requestID) else { return result(.cancelled) }
+            guard let http = response as? HTTPURLResponse else { return result(.fail("ChatGPT didn't respond.")) }
+            if http.statusCode != 200 {
+                var data = Data()
+                for try await byte in bytes {
+                    guard isCurrent(requestID) else { return result(.cancelled) }
+                    data.append(byte)
+                    if data.count >= 65_536 { break }
+                }
+                let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+                let fields = object?["error"] as? [String: Any]
+                let code = fields?["code"] as? String
+                let message = fields.map(ChatGPTStreamEvent.errorMessage)
+                    ?? (object?["detail"] as? String) ?? "ChatGPT request failed (HTTP \(http.statusCode))."
+                if code == "subscription_sharing_usage_limit_exceeded" {
+                    chatGPTUsageBlocked = true
+                    return result(.fail(message))
+                }
+                if [408, 429, 500, 502, 503, 504].contains(http.statusCode) { return result(.retry(message)) }
+                if http.statusCode == 401 {
+                    return result(.fail("ChatGPT couldn't authorize this request. Continue with ChatGPT again in Settings."))
+                }
+                return result(.fail(message))
+            }
+            for try await line in bytes.lines {
+                guard isCurrent(requestID) else { return result(.cancelled) }
+                guard let event = ChatGPTStreamEvent(line: line) else { continue }
+                if let text = event.text, !text.isEmpty {
+                    emittedText = true
+                    appendText(text, responseID: responseID)
+                    if Date().timeIntervalSince(lastSave) >= 1 { persist(); lastSave = Date() }
+                }
+                if let failure = event.failure {
+                    let response = event.object["response"] as? [String: Any]
+                    let error = response?["error"] as? [String: Any]
+                    if (error?["code"] as? String ?? event.object["code"] as? String) == "subscription_sharing_usage_limit_exceeded" {
+                        chatGPTUsageBlocked = true
+                    }
+                    return result(.fail(failure))
+                }
+                switch event.type {
+                case "response.web_search_call.in_progress", "response.web_search_call.searching":
+                    searching = true; isThinking = false
+                case "response.web_search_call.completed":
+                    searching = false; usage.searches += 1
+                case "response.output_text.annotation.added":
+                    if let annotation = event.object["annotation"] as? [String: Any] { source(annotation) }
+                case "response.completed":
+                    if let response = event.object["response"] as? [String: Any] {
+                        if let fields = response["usage"] as? [String: Any] { usage.update(from: fields) }
+                        let output = response["output"] as? [[String: Any]] ?? []
+                        var finalText = ""
+                        for item in output where item["type"] as? String == "message" {
+                            for content in item["content"] as? [[String: Any]] ?? [] {
+                                finalText += (content["text"] as? String) ?? (content["refusal"] as? String) ?? ""
+                                for annotation in content["annotations"] as? [[String: Any]] ?? [] { source(annotation) }
+                            }
+                        }
+                        if !emittedText, !finalText.isEmpty {
+                            appendText(finalText, responseID: responseID)
+                            emittedText = true
+                        }
+                    }
+                    return emittedText ? result(.done) : result(.fail("ChatGPT returned no answer. Try again."))
+                default: break
+                }
+            }
+        } catch {
+            if !isCurrent(requestID) || error is CancellationError || (error as? URLError)?.code == .cancelled {
+                return result(.cancelled)
+            }
+            if !emittedText { return result(.retry("Couldn't reach ChatGPT. \(error.localizedDescription)")) }
+            return result(.fail("The connection ended before the reply finished. Try again."))
+        }
+        return result(.fail("The connection ended before ChatGPT finished the reply. Try again."))
     }
 
     private func appendText(_ text: String, responseID: UUID) {

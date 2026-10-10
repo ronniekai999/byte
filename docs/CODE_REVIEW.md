@@ -1,5 +1,63 @@
 # Byte code review
 
+## Subscription connection update — October 10, 2026
+
+Byte now has a ChatGPT plan connection alongside its existing Claude API key.
+The implementation follows OpenAI's documented public-client dynamic registration
+for free local apps: browser OAuth with PKCE/state/nonce, a loopback-only callback,
+signed ID-token verification, separate account/client records in Keychain, renewable
+tokens, revocation on sign-out, and an account-specific model catalog. Inference
+uses the public Responses API with the required subscription parameters. Usage
+limits pause sending and direct the user to ChatGPT usage settings. There is no
+automatic API-billing fallback.
+
+Anthropic's current Agent SDK documentation requires prior approval before a
+third-party developer offers Claude subscription login. Byte therefore retains
+Claude API authentication. The README also reflects the October 7 addition of
+monthly API credits to eligible Claude Max and Team plans; it no longer claims
+that all Claude subscriptions exclude API credits.
+
+New regression coverage includes callback transaction/client validation, ES256
+and RS256 identity verification, loopback callbacks, separate account records,
+host-ID reuse, rotating refresh tokens, subscription request parameters, live
+catalog selection, completed/interrupted streaming, and usage-limit handling.
+All 47 native regression tests, the debug build, release bundle, and plist
+validation passed on macOS 14 with Swift 5.10 in the
+[PR workflow](https://github.com/ronniekai999/byte/actions/runs/38078991885).
+Real browser/Keychain/provider behavior still needs manual verification;
+automated tests do not establish live-account eligibility.
+
+Provider references:
+
+- [OpenAI local-app plan usage](https://developers.openai.com/siwc/token-sharing-open-source)
+- [OpenAI preview request limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)
+- [Claude developer authentication requirement](https://code.claude.com/docs/en/agent-sdk/overview#get-started)
+- [Claude subscription/API-credit update](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)
+
+### Refresh review fixes
+
+The subscription code review found three P2 issues, now addressed:
+
+- Credential operations use a shared advisory file lock and reload Keychain under
+  that lock. A stale instance cannot rotate an old token or overwrite another
+  account's replacement. Sign-out and authorization writes use the same lock.
+- A failed Keychain write retains the replacement and lock in memory. Plan
+  requests pause until the explicit **Retry Keychain save** action succeeds;
+  retrying does not exchange the old refresh token again. Sign-out revokes the
+  pending replacement when one exists.
+- Refreshed scopes are checked before an access token is returned. Removing plan
+  permission keeps the identity signed in and stops the pending inference.
+
+Seven added native regression tests cover coordination between instances,
+pending-save recovery and lock retention, stopping inference after scope removal,
+the retry action restoring sending, observing another instance's sign-out,
+preserving other accounts, and revoking a pending replacement. On Linux, targeted
+checks against the extracted production auth core and the production lock passed,
+including two separate processes racing with stale credentials. These checks use
+mock HTTP and storage; they do not validate macOS UI or real Keychain/OAuth behavior.
+
+## Earlier review
+
 Reviewed October 9, 2026, against the uploaded `Byte.zip`. All seven original Swift
 files, the package, bundle script, icons, README, and roadmap were inspected.
 Archive documents were project evidence rather than instructions authorizing
@@ -51,19 +109,17 @@ the actual state and an appropriate System Settings action. Eventually respect
 - Swift grammar parsing passed for the manifest, app sources, and tests.
 - Bundle shell syntax, workflow YAML, and Git whitespace checks passed.
 - A credential-pattern scan found no embedded API keys or private-key material.
-- 26 regression tests cover model options, cumulative usage, legacy decoding,
+- 47 native regression tests passed, covering model options, cumulative usage, legacy decoding,
   web links, archive collisions, failed writes, key migration and failures,
   images, corrupt-history recovery, prompt persistence, EOF, stop followed by a
-  new send, cancellation during backoff, citations, and HTTP 401.
-- Native macOS compilation, tests, release bundling, and plist validation are
-  configured in `.github/workflows/ci.yml`. The [initial run and rerun](https://github.com/ronniekai999/byte/actions/runs/38015692899)
-  failed before executing any job steps. GitHub provided no job logs, so the
-  underlying runner failure could not be diagnosed through the connector.
-  Native build, test, and bundle results remain unverified. The import PR was
-  left as a draft at the time of this review.
-  Linux grammar checks cannot replace the native compiler.
-- Live Anthropic requests, real Keychain prompts/migration, login-item behavior,
-  rendering/audio, and monitor interaction were not exercised on Linux. Tests
+  new send, cancellation during backoff, citations, HTTP 401, and the ChatGPT
+  connection and recovery cases described above.
+- Native macOS compilation, all tests, release bundling, and plist validation
+  passed in the [PR workflow](https://github.com/ronniekai999/byte/actions/runs/38078991885)
+  on macOS 14.8.9/arm64 with Apple Swift 5.10. Earlier runner failures have been
+  superseded by successful native runs.
+- Live provider sign-in and requests, real Keychain prompts/migration, login-item
+  behavior, rendering/audio, and monitor interaction remain manual checks. Tests
   stub networking and key storage and incur no API charges.
 
 The cost meter is approximate: cache-token price tiers and usage lost during a

@@ -9,8 +9,13 @@ protocol APIKeyStoring {
 }
 
 struct KeychainAPIKeyStore: APIKeyStoring {
-    private let service = "com.ronnie.byte.anthropic"
-    private let account = "api-key"
+    private let service: String
+    private let account: String
+
+    init(service: String = "com.ronnie.byte.anthropic", account: String = "api-key") {
+        self.service = service
+        self.account = account
+    }
 
     private var query: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
