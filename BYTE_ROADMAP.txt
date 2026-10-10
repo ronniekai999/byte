@@ -1,0 +1,44 @@
+BYTE — ROADMAP
+==============
+Updated: October 9, 2026
+
+IMPLEMENTED
+-----------
+[x] Pixel-art T-rex, facial expressions, sound, and idle tricks
+[x] Pet needs, feed, water, play, rest, and optional check-ins
+[x] Drag-to-pin position and notch reset
+[x] Streaming chat, markdown, vision, and web citations
+[x] Persistent conversations, archive browser, and image sidecars
+[x] Settings, launch at login, and approximate session cost
+
+CODE REVIEW IMPROVEMENTS
+------------------------
+[x] Unique archives, explicit save errors, and write-failure recovery
+[x] Save prompts before requests and checkpoint interrupted replies
+[x] Preserve corrupt history before replacing it
+[x] Keychain storage with failure-aware legacy migration
+[x] Model-specific request options and Haiku 4.5 vision
+[x] Stop/cancel, bounded retries, and stale-callback protection
+[x] Require message_stop and exclude failed replies from API context
+[x] Capture request settings and final cumulative usage
+[x] Restrict generated links to web URLs and label main icon controls
+[x] Regression tests and macOS build/test/bundle workflow
+
+NEXT
+----
+[ ] Global shortcut to open and focus chat
+[ ] Context budget, optional thread summary, and cost controls
+[ ] Check model availability; maintain capabilities and pricing together
+[ ] Developer ID signing, notarization, and repeatable distribution
+
+FOLLOWING
+---------
+[ ] Image picker, missing-image recovery, and safe sidecar cleanup
+[ ] Per-display drag constraints and monitor-change testing
+[ ] Resizable chat panel, reduced motion, and VoiceOver validation
+[ ] Separate networking, persistence, pet simulation, and views
+[ ] Report login-item errors and handle requiresApproval consistently
+[ ] Test provider retry/continuation behavior and supported toolchains
+
+See docs/CODE_REVIEW.md for evidence, validation limits, and acceptance criteria.
+Existing model IDs were retained and need a live Anthropic availability check.
