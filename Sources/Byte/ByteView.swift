@@ -160,7 +160,7 @@ struct ByteView: View {
                             if !model.chatOpen { model.toggleChat() }
                         }
                     }
-                    if model.hasKey {
+                    if model.hasConnection || (model.provider == .chatGPT && model.chatGPT.isSignedIn) {
                         Divider()
                         Button("Sign out") { model.signOut() }
                     }
@@ -568,10 +568,29 @@ struct ChatPanel: View {
                         .accessibilityLabel("Dismiss save error")
                 }
             }
-            if model.hasKey {
+            if let error = model.connectionError ?? (model.provider == .chatGPT ? model.chatGPT.error : nil) {
+                Text(error)
+                    .font(.system(size: 10, design: .rounded))
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if model.hasConnection {
                 transcript
                 if model.pendingImage != nil { pendingImageChip }
                 inputBar
+                if model.provider == .chatGPT {
+                    HStack {
+                        Text(model.chatGPTUsageBlocked ? "ChatGPT usage limit reached" :
+                             model.isLoadingModels ? "Loading your models…" : "Using ChatGPT plan")
+                        Spacer()
+                        Link("Manage usage", destination: ChatGPTAuth.usageURL)
+                        if model.chatGPTUsageBlocked {
+                            Button("Try again") { model.retryChatGPTPlanUsage() }
+                                .buttonStyle(.plain)
+                        }
+                    }
+                    .font(.system(size: 10, design: .rounded)).foregroundStyle(.secondary)
+                }
                 if model.sessionInTok + model.sessionOutTok > 0 { costFooter }
             } else {
                 signIn
@@ -596,6 +615,12 @@ struct ChatPanel: View {
             guard model.isThinking || model.searching else { if !dots.isEmpty { dots = "" }; return }
             dots = dots.count >= 3 ? "" : dots + "."
         }
+        .alert("You're using your ChatGPT plan", isPresented: Binding(
+            get: { model.chatGPT.showPlanWelcome }, set: { model.chatGPT.showPlanWelcome = $0 })) {
+            Button("Got it", role: .cancel) {}
+        } message: {
+            Text("Eligible AI requests in Byte use your ChatGPT plan or available credits. Review usage and set Byte's limits in ChatGPT settings.")
+        }
     }
 
     private var header: some View {
@@ -608,7 +633,7 @@ struct ChatPanel: View {
                 .help("Settings")
                 .accessibilityLabel("Settings")
                 .popover(isPresented: $showSettings, arrowEdge: .bottom) {
-                    SettingsView()
+                    SettingsView(byte: model)
                 }
             if model.hasArchive {
                 Button { showArchives.toggle() } label: { Image(systemName: "tray.full") }
@@ -633,32 +658,7 @@ struct ChatPanel: View {
     }
 
     private var signIn: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Connect your Anthropic API key")
-                .font(.system(size: 12, weight: .semibold, design: .rounded))
-            Text("Byte uses the Anthropic API. Paste a key once and I'll keep it in your Mac's Keychain. API usage is billed to your Anthropic account. 🦖")
-                .font(.system(size: 11, design: .rounded))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            SecureField("sk-ant-…", text: $model.keyInput)
-                .textFieldStyle(.plain)
-                .font(.system(size: 11, design: .monospaced))
-                .padding(7)
-                .background(RoundedRectangle(cornerRadius: 7).fill(.quaternary))
-                .onSubmit { model.saveKey() }
-            HStack {
-                Button("Get a key ↗") {
-                    if let u = URL(string: "https://console.anthropic.com/settings/keys") {
-                        NSWorkspace.shared.open(u)
-                    }
-                }
-                .buttonStyle(.plain).font(.system(size: 10)).foregroundStyle(accent)
-                Spacer()
-                Button("Save") { model.saveKey() }
-                    .controlSize(.small)
-                    .disabled(model.keyInput.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-        }
+        ConnectionView(model: model)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 2)
     }
@@ -792,7 +792,7 @@ struct ChatPanel: View {
     }
 
     private var canSend: Bool {
-        !model.isStreaming &&
+        model.canSend && !model.isStreaming &&
         (!model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.pendingImageB64 != nil)
     }
 
@@ -817,8 +817,10 @@ struct ChatPanel: View {
     private var costFooter: some View {
         let toks = model.sessionInTok + model.sessionOutTok
         return HStack(spacing: 4) {
-            Text("≈ \(costString(model.sessionCost))")
-            Text("·").foregroundStyle(.tertiary)
+            if model.provider == .anthropic {
+                Text("≈ \(costString(model.sessionCost))")
+                Text("·").foregroundStyle(.tertiary)
+            }
             Text("\(tokString(toks)) tokens")
             if model.sessionSearches > 0 {
                 Text("·").foregroundStyle(.tertiary)
@@ -829,7 +831,8 @@ struct ChatPanel: View {
         }
         .font(.system(size: 9, design: .rounded))
         .foregroundStyle(.secondary)
-        .help("Estimated from token usage at approximate list prices — not exact billing.")
+        .help(model.provider == .chatGPT ? "Token usage reported this session. Review plan and credit usage in ChatGPT settings."
+              : "Estimated from token usage at approximate list prices — not exact billing.")
         .padding(.horizontal, 2)
     }
 
@@ -1149,7 +1152,87 @@ struct NeedBar: View {
 // MARK: - Settings (popover from the chat header)
 
 @MainActor
+struct ConnectionView: View {
+    @ObservedObject var model: ByteModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("AI connection", selection: Binding(get: { model.provider }, set: { model.selectProvider($0) })) {
+                ForEach(ByteModel.AIProvider.allCases, id: \.self) { provider in
+                    Text(provider.label).tag(provider)
+                }
+            }
+            .disabled(model.isStreaming || model.isConnecting)
+            if model.provider == .chatGPT {
+                Text("Use your ChatGPT plan")
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                Text("Eligible Plus and Pro users can use their plan or credits in Byte. Sign in securely in your browser; credentials stay in your Mac's Keychain.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !model.chatGPT.accounts.isEmpty {
+                    Picker("Account", selection: Binding(
+                        get: { model.chatGPT.activeClientID ?? "" },
+                        set: { model.selectChatGPTAccount($0) })) {
+                        ForEach(model.chatGPT.accounts) { account in
+                            Text(account.label).tag(account.clientID)
+                        }
+                    }
+                    .disabled(model.isStreaming || model.isConnecting || model.chatGPT.needsCredentialSave)
+                }
+                if model.chatGPT.needsCredentialSave {
+                    Button("Retry Keychain save") { model.retryChatGPTCredentialSave() }
+                        .disabled(model.isStreaming || model.isConnecting)
+                }
+                if model.isConnecting {
+                    HStack {
+                        ProgressView().controlSize(.small)
+                        Text("Connecting…")
+                        if model.chatGPT.isSigningIn { Button("Cancel") { model.cancelChatGPTSignIn() } }
+                    }
+                } else {
+                    Button("Continue with ChatGPT") { model.signInChatGPT() }
+                        .disabled(model.isStreaming || model.chatGPT.needsCredentialSave)
+                    if !model.chatGPT.accounts.isEmpty {
+                        Button("Add ChatGPT account") { model.signInChatGPT(addAccount: true) }
+                            .disabled(model.isStreaming || model.chatGPT.needsCredentialSave)
+                    }
+                }
+                HStack {
+                    Link("Manage usage", destination: ChatGPTAuth.usageURL)
+                    Spacer()
+                    if model.chatGPT.isSignedIn {
+                        Button("Sign out") { model.signOut() }
+                            .disabled(model.isConnecting)
+                    }
+                }
+            } else {
+                Text(model.hasKey ? "Claude API key connected" : "Connect your Anthropic API key")
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                Text("Claude API usage uses your Anthropic account's API billing or eligible credits. Claude subscription sign-in for Byte requires Anthropic approval.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                SecureField("sk-ant-…", text: $model.keyInput)
+                    .textFieldStyle(.plain).font(.system(size: 11, design: .monospaced))
+                    .padding(7).background(RoundedRectangle(cornerRadius: 7).fill(.quaternary))
+                    .onSubmit { model.saveKey() }
+                HStack {
+                    Link("Get a key ↗", destination: URL(string: "https://console.anthropic.com/settings/keys")!)
+                    Spacer()
+                    Button("Save") { model.saveKey() }
+                        .disabled(model.keyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    if model.hasKey { Button("Remove key") { model.signOut() } }
+                }
+                .disabled(model.isStreaming)
+            }
+        }
+        .font(.system(size: 11, design: .rounded))
+        .controlSize(.small)
+    }
+}
+
+@MainActor
 struct SettingsView: View {
+    @ObservedObject var byte: ByteModel
     @AppStorage("byte.webSearch") private var webSearch = true
     @AppStorage("byte.sounds") private var sounds = true
     @AppStorage("byte.checkins") private var checkins = true
@@ -1167,6 +1250,9 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Byte settings")
                 .font(.system(size: 13, weight: .semibold, design: .rounded))
+
+            ConnectionView(model: byte)
+            Divider()
 
             Toggle("Web search", isOn: $webSearch)
             Toggle("Sound effects", isOn: $sounds)
@@ -1189,19 +1275,30 @@ struct SettingsView: View {
                 Text("Light").tag(1)
                 Text("Lots").tag(2)
             }
-            Picker("Model", selection: $model) {
-                Text("Sonnet 4.6").tag("claude-sonnet-4-6")
-                Text("Opus 4.8").tag("claude-opus-4-8")
-                Text("Haiku 4.5").tag("claude-haiku-4-5-20251001")
+            if byte.provider == .chatGPT {
+                Picker("Model", selection: Binding(get: { byte.model }, set: { byte.selectChatGPTModel($0) })) {
+                    if byte.chatGPTModels.isEmpty { Text("Loading models…").tag(byte.model) }
+                    ForEach(byte.chatGPTModels) { choice in Text(choice.display_name).tag(choice.slug) }
+                }
+                .disabled(byte.isStreaming || byte.isLoadingModels || byte.chatGPTModels.isEmpty)
+                Button("Refresh models") { byte.reloadChatGPTModels() }
+                    .disabled(byte.isStreaming || byte.isLoadingModels || !byte.chatGPT.canUsePlan)
+            } else {
+                Picker("Model", selection: $model) {
+                    Text("Sonnet 4.6").tag("claude-sonnet-4-6")
+                    Text("Opus 4.8").tag("claude-opus-4-8")
+                    Text("Haiku 4.5").tag("claude-haiku-4-5-20251001")
+                }
             }
             Picker("Effort", selection: $effort) {
                 Text("Low").tag("low")
                 Text("Medium").tag("medium")
                 Text("High").tag("high")
             }
-            .disabled(!AnthropicRequestConfiguration.supportsAdaptiveThinking(model))
+            .disabled(byte.provider == .chatGPT || !AnthropicRequestConfiguration.supportsAdaptiveThinking(model))
 
-            Text(AnthropicRequestConfiguration.supportsAdaptiveThinking(model)
+            Text(byte.provider == .chatGPT ? "Your account determines available models and capabilities. Changes apply to the next message."
+                 : AnthropicRequestConfiguration.supportsAdaptiveThinking(model)
                  ? "Changes apply to your next message."
                  : "Haiku uses standard generation. Effort applies to Sonnet and Opus.")
                 .font(.system(size: 10, design: .rounded))
@@ -1209,7 +1306,7 @@ struct SettingsView: View {
         }
         .font(.system(size: 12, design: .rounded))
         .padding(14)
-        .frame(width: 230)
+        .frame(width: 300)
     }
 }
 

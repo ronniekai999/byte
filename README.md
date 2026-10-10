@@ -2,14 +2,14 @@
 
 <img src="docs/assets/byte-banner.svg" alt="Byte — small arms, big answers. Your tiny T-rex for the macOS notch." width="100%">
 
-**A little company. A lot of Claude. Right below your Mac's notch.**
+**A little company. Claude or ChatGPT. Right below your Mac's notch.**
 
 <br>
 
 <img src="https://img.shields.io/badge/macOS-14%2B-242438?logo=apple&logoColor=white" alt="Requires macOS 14 or newer">
 <img src="https://img.shields.io/badge/Swift-5.9%2B-F05138?logo=swift&logoColor=white" alt="Swift 5.9 or newer">
 <img src="https://img.shields.io/badge/UI-SwiftUI_%2B_AppKit-70B660" alt="Native SwiftUI and AppKit">
-<img src="https://img.shields.io/badge/AI-Claude-D97757" alt="Claude via the Anthropic API">
+<img src="https://img.shields.io/badge/AI-Claude%20%2B%20ChatGPT-D97757" alt="Claude API or your ChatGPT plan">
 <img src="https://img.shields.io/badge/status-source_preview-9F8CE8" alt="Source preview">
 
 <br><br>
@@ -20,11 +20,11 @@
 
 ---
 
-Byte is a native macOS companion with two sides: a pixel-art T-rex who needs a snack, a drink, and a little attention; and a compact Claude chat panel for questions, code, images, and web research. He lives just below the notch, reacts while he thinks, and remembers where you leave him.
+Byte is a native macOS companion with two sides: a pixel-art T-rex who needs a snack, a drink, and a little attention; and a compact Claude or ChatGPT panel for everyday questions, images, and web research. He lives just below the notch, reacts while he thinks, and remembers where you leave him.
 
 Click to chat. Hover to care. Drag to make yourself at home.
 
-**The pet works without an API key.** Connect your own Anthropic key when you want AI replies. Byte is built with SwiftUI and AppKit, with no third-party runtime dependencies.
+**The pet works without an AI connection.** For replies, use an eligible ChatGPT plan through browser sign-in, or connect your own Anthropic API key. Credentials stay in macOS Keychain. Byte is built with SwiftUI and AppKit, with no third-party runtime dependencies.
 
 > **Source preview:** Byte is currently built from source. Bundles produced by this repository are unsigned, and native macOS build, test, and runtime validation remain outstanding. See the [review and validation notes](docs/CODE_REVIEW.md#validation) for the current evidence.
 
@@ -39,7 +39,11 @@ Click to chat. Hover to care. Drag to make yourself at home.
 - **Optional check-ins** and adjustable puns, from off to lots.
 - **A home under the notch**, or wherever you drag him. His pinned position is remembered; a right-click resets it.
 
-### 🧠 Claude, one click away
+### 🧠 Claude or ChatGPT, one click away
+
+- **Continue with ChatGPT** uses OpenAI's documented sign-in flow for local apps. Eligible Plus and Pro users can authorize plan usage without an API key.
+- **Account and model choices** keep ChatGPT registrations separate and load the selected account's available models.
+- **Claude API access** remains available with an Anthropic key; subscription login requires prior Anthropic approval for a third-party product.
 
 - **Streaming replies** in a compact panel, with Markdown formatting and copyable code blocks.
 - **Image questions** by dragging an image onto Byte, pasting with ⌘V, or using the clipboard button. Attach a screenshot, diagram, or photo to your next message.
@@ -72,7 +76,7 @@ Click to chat. Hover to care. Drag to make yourself at home.
 | --- | --- |
 | Operating system | **macOS 14 Sonoma or newer** |
 | Build tools | **Swift 5.9+**, supplied by Xcode or Xcode Command Line Tools |
-| AI chat | An **Anthropic API key** and an internet connection |
+| AI chat | An **eligible ChatGPT plan** or **Anthropic API key**, and an internet connection |
 | Pet and care | Works locally without an API key |
 
 Check your toolchain with `swift --version`. If Apple's command-line tools are missing, run `xcode-select --install` and finish the installer before continuing.
@@ -85,9 +89,11 @@ cd byte
 swift run
 ```
 
-Byte appears near the top of your display. **Click him to open chat.** You can use the pet first, or paste your Anthropic API key into the connection form and choose **Save**.
+Byte appears near the top of your display. **Click him to open chat.** Choose **ChatGPT · your plan** and **Continue with ChatGPT**, then approve Byte in your browser. Byte loads your account's available models after connecting. You can also use the pet first, or choose **Claude · API key**, paste your key, and choose **Save**.
 
-Create a key in the [Anthropic Console](https://console.anthropic.com/). API usage is billed to your Anthropic API account; a Claude subscription does not include API credits.
+ChatGPT requests use your authorized plan allowance or available credits. **Manage usage** opens ChatGPT settings, where you can review usage and set Byte's limits. This uses the supported local-app integration, not a Codex login or access to existing ChatGPT conversations. Paid or remotely hosted distribution needs OpenAI approval; see [OpenAI's plan-usage guide](https://developers.openai.com/siwc/token-sharing-open-source).
+
+For Claude, create a key in the [Anthropic Console](https://console.anthropic.com/). API requests use your API billing or eligible credits. Anthropic's October 7, 2026 update adds monthly API credits to Max and Team plans, but its developer docs still require prior approval to offer subscription login in a third-party product. See [the subscription update](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan) and [the developer requirement](https://code.claude.com/docs/en/agent-sdk/overview#get-started). Being a general companion app does not change that requirement.
 
 ### 3. Make it an app
 
@@ -151,17 +157,21 @@ Open chat and choose the **gear** in its header.
 
 | Setting | Default | What it changes |
 | --- | --- | --- |
-| Web search | On | Allows Claude to search the web when answering |
+| AI connection | Claude API for existing installations | Choose Claude API or your ChatGPT plan; manage saved connections |
+| ChatGPT account | Last selected registration | Switch accounts/workspaces, add an account, reauthorize, or sign out |
+| Web search | On | Allows the provider to search when the selected model/account supports it |
 | Sound effects | On | Plays Byte's synthesized stomp sounds |
 | Random check-ins | On | Lets Byte occasionally say hello or mention a need |
 | Puns | Lots | Choose Off, Light, or Lots |
-| Model | Sonnet 4.6 | Selects the model for the next request |
-| Effort | High | Low, Medium, or High for supported models |
+| Model | Sonnet 4.6 for Claude; first available catalog entry for ChatGPT | Selects the next request's model |
+| Effort | High | Low, Medium, or High for supported Claude models; disabled for ChatGPT |
 | Launch at login | Reflects macOS registration | Starts an installed Byte bundle when you sign in |
 
 ### Model choices
 
-The current picker contains these identifiers:
+ChatGPT choices come from your account's live model catalog, preserving its ordering. Use **Refresh models** to retry a failed catalog request. Capabilities such as image input and web search depend on the chosen model and account policy; provider errors remain visible and do not silently switch billing.
+
+The Claude picker contains these identifiers:
 
 | Choice | API model ID | Request behavior |
 | --- | --- | --- |
@@ -172,7 +182,7 @@ The current picker contains these identifiers:
 Model IDs and capabilities are configured in [AnthropicRequest.swift](Sources/Byte/AnthropicRequest.swift). **Live model availability has not been verified**, and the Opus identifier was retained from the original source. If a request reports an unavailable model, choose one your Anthropic account supports. Model discovery and a shared capability/pricing catalog are planned.
 
 <a id="privacy-and-cost"></a>
-## 🔐 Your data, keys, and API costs
+## 🔐 Your data, connections, and usage
 
 ### What stays on your Mac
 
@@ -189,19 +199,23 @@ Byte stores conversations, pet state, and attachments under `~/.config/byte`:
 └── history-recovery-<UUID>.json  # Created when unreadable history is preserved
 ```
 
-Settings and pinned position use macOS preferences. Newly entered API keys use **Keychain**, separately from the conversation files. Chat and image files are local files; they are **not encrypted by Byte**. Back up the whole data directory to retain attachments alongside chats.
+Settings, selected account, a stable opaque ChatGPT host ID, and pinned position use macOS preferences. API keys and ChatGPT account credentials use separate **Keychain** records, apart from conversation files. Chat and image files are local files; they are **not encrypted by Byte**. Back up the whole data directory to retain attachments alongside chats.
+
+ChatGPT sign-in opens the system browser and briefly listens on `127.0.0.1` for its callback. Byte verifies the signed identity token, state, nonce, audience, issuer, and expiration before making the new account active. Returning sign-ins reuse that account's issued client ID and the installation's host ID. Tokens refresh automatically and are saved together in Keychain. Credential updates are coordinated across Byte processes. If Keychain rejects a save, Byte retains the replacement in memory and pauses plan requests until **Retry Keychain save** succeeds. Sign-out attempts remote revocation and clears local tokens; if revocation cannot be confirmed, Byte tells you to disconnect it in ChatGPT settings. Account registration metadata is retained for later sign-in.
 
 Older `~/.config/byte/api_key` files are migrated to Keychain. The plaintext file is removed only after the Keychain write and read succeed; a failed migration retains the original and shows an error. The older `~/.config/finn` directory is migrated when a Byte directory does not already exist.
 
-### What goes to Anthropic
+### What goes to your AI provider
 
-When you send a question, Byte sends the conversation context, its system prompt, and attached images in that thread to the **Anthropic Messages API**. AI replies require cloud access. With web search enabled, Claude can also use Anthropic's search tool.
+When you send a question, Byte sends the thread's conversation context, its instructions, and attached images to the selected provider: the **Anthropic Messages API** or **OpenAI Responses API**. Switching providers sends subsequent requests, including the existing thread context, to the newly selected provider. AI replies require cloud access. With web search enabled, the provider can use its supported search tool.
+
+ChatGPT requests use `store: false` and `stream: true`, resend local context, and only count a reply as complete after `response.completed`. Subscription usage limits can apply across apps or specifically to Byte. A limit pauses sending until you review **Manage usage** and choose **Try again**. Byte never silently falls back to paid Anthropic API calls.
 
 Image attachment is explicit: drag, paste, or use the clipboard button. Byte does not automatically capture your screen.
 
 ### How the cost estimate works
 
-The session meter uses reported input/output tokens and web searches, with approximate prices defined in the source. It includes known usage from failed attempts. Actual billing can differ because of cached-token pricing, disconnects, and provider price changes.
+For Claude API requests, the session meter uses reported input/output tokens and web searches, with approximate prices defined in the source. It includes known usage from failed attempts. Actual billing can differ because of cached-token pricing, disconnects, and provider price changes. ChatGPT displays reported session tokens without a dollar estimate; use **Manage usage** for plan and credit usage.
 
 Long conversations resend more context, including images. Starting a new chat, choosing a lower-cost supported model, and turning off search when you do not need it can reduce usage. Check actual charges in your Anthropic account; the meter is an estimate.
 
@@ -215,7 +229,10 @@ Deleting an archive currently leaves image sidecars on disk. Automatic image cle
 | **Build tools are missing** | Run `xcode-select --install`, complete installation, and confirm `swift --version` reports 5.9+. Build on macOS 14 or newer. |
 | **Byte has no Dock icon** | This is an accessory app. Look near the top of the display; right-click Byte for **Quit**. |
 | **Byte is in the wrong place** | Right-click him and choose **Reset position to notch**, then drag him to your preferred spot. |
-| **Chat asks for a key after I saved one** | Check the storage error banner and Keychain access. For terminal runs, check whether `ANTHROPIC_API_KEY` overrides the saved key. |
+| **Chat asks for a key after I saved one** | Check the selected AI connection, storage error banner, and Keychain access. For terminal runs, check whether `ANTHROPIC_API_KEY` overrides the saved key. |
+| **ChatGPT sign-in or models fail** | Check the visible connection error and selected account. Retry **Continue with ChatGPT** or **Refresh models** in Settings. Plan/account eligibility and provider availability still apply. |
+| **ChatGPT credentials couldn't be saved** | Unlock Keychain or restore Byte's access, then choose **Retry Keychain save** in the connection form. Keep Byte open so the pending replacement can be saved. |
+| **ChatGPT reports a usage limit** | Open **Manage usage** to review plan and Byte limits, then choose **Try again** when usage is available. |
 | **A model request is rejected** | Check the key's API access and the model ID in Settings. Live availability of the bundled IDs, especially Opus, needs verification. |
 | **A reply stalls or is interrupted** | Use **Stop reply** and send again when connectivity recovers. Partial replies remain visible with a status and are excluded from future assistant context. |
 | **New chat or reopening reports a save error** | Check available disk space and access to `~/.config/byte`. Keep the live thread and recovery files until the storage problem is resolved. |
@@ -233,7 +250,9 @@ flowchart LR
     Window["AppKit window<br/>Notch placement and dragging"] --- UI
     Model --> Disk[("Local files<br/>Chats, images, pet state")]
     Model --> Keys["macOS Keychain<br/>Saved API key"]
+    Model --> Auth["ChatGPT browser sign-in<br/>Credentials in Keychain"]
     Model -->|"HTTPS · send a message"| API["Anthropic Messages API<br/>Streaming replies and images"]
+    Auth --> GPT["OpenAI Responses API<br/>Authorized ChatGPT plan usage"]
     API -.->|"When enabled"| Search["Web search tool"]
 ```
 
@@ -251,7 +270,7 @@ swift test
 plutil -lint Byte.app/Contents/Info.plist
 ```
 
-The [macOS workflow](.github/workflows/ci.yml) is configured to run the same sequence. The source includes **26 regression tests** for request options, usage, persistence, archives, key migration, images, interrupted streams, cancellation, citations, and link handling. Tests use temporary directories, stubbed HTTP streams, and an in-memory key store; they do not call Anthropic or use your real Keychain.
+The [macOS workflow](.github/workflows/ci.yml) is configured to run the same sequence. Regression tests cover request options, usage, persistence, archives, key migration, images, interrupted streams, cancellation, citations, and link handling, plus ChatGPT callback validation, identity signatures/claims, account separation, token rotation, catalog selection, plan limits, and request contracts. Tests use temporary directories, stubbed HTTP streams, and in-memory credential stores; they do not make live provider calls or use your real Keychain.
 
 A passing native build/test/bundle run has **not yet been established**. Linux syntax checks cannot validate AppKit, SwiftUI, Security, or AVFoundation. Read the [code review](docs/CODE_REVIEW.md) for findings, remaining priorities, and validation limits.
 
@@ -263,6 +282,10 @@ A passing native build/test/bundle run has **not yet been established**. Linux s
 | [ByteModel.swift](Sources/Byte/ByteModel.swift) | Conversation state, persistence, archives, pet care, and streaming |
 | [AnthropicRequest.swift](Sources/Byte/AnthropicRequest.swift) | Model-specific request options and cumulative usage |
 | [APIKeyStore.swift](Sources/Byte/APIKeyStore.swift) | Keychain storage and the testable key-store interface |
+| [ChatGPTAuth.swift](Sources/Byte/ChatGPTAuth.swift) | Browser authorization, verified identities, protected account records, token refresh and sign-out |
+| [ChatGPTCredentialLock.swift](Sources/Byte/ChatGPTCredentialLock.swift) | Shared credential locking across Byte processes |
+| [OAuthLoopbackListener.swift](Sources/Byte/OAuthLoopbackListener.swift) | Temporary local OAuth callback listener |
+| [ChatGPTRequest.swift](Sources/Byte/ChatGPTRequest.swift) | Subscription request contract and Responses stream events |
 | [ByteView.swift](Sources/Byte/ByteView.swift) | Pet interaction, chat, Markdown, settings, and archives |
 | [ByteSprite.swift](Sources/Byte/ByteSprite.swift) · [Props.swift](Sources/Byte/Props.swift) | Pixel-art character and care props |
 | [Quips.swift](Sources/Byte/Quips.swift) · [Sound.swift](Sources/Byte/Sound.swift) | Personality and synthesized audio |

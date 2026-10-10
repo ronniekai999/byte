@@ -56,6 +56,8 @@ private struct Fixture {
     let defaults: UserDefaults
     let suite: String
     let keys: MemoryKeyStore
+    let chatGPTKeys: MemoryKeyStore
+    let chatGPTLock: ChatGPTCredentialLock
     let session: URLSession
     let model: ByteModel
 
@@ -65,10 +67,13 @@ private struct Fixture {
         suite = "ByteTests.\(UUID().uuidString)"
         defaults = UserDefaults(suiteName: suite)!
         keys = MemoryKeyStore(key: key)
+        chatGPTKeys = MemoryKeyStore(key: nil)
+        chatGPTLock = ChatGPTCredentialLock(url: root.appendingPathComponent("chatgpt-credentials.lock"))
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
         session = URLSession(configuration: configuration)
-        model = ByteModel(configDirectory: root, defaults: defaults, keyStore: keys,
+        model = ByteModel(configDirectory: root, defaults: defaults, keyStore: keys, chatGPTStore: chatGPTKeys,
+                          chatGPTCredentialLock: chatGPTLock,
                           session: session, environment: [:],
                           now: { Date(timeIntervalSince1970: 1_700_000_000) })
     }
@@ -82,7 +87,8 @@ private struct Fixture {
     }
 
     func reloaded() -> ByteModel {
-        ByteModel(configDirectory: root, defaults: defaults, keyStore: keys,
+        ByteModel(configDirectory: root, defaults: defaults, keyStore: keys, chatGPTStore: chatGPTKeys,
+                  chatGPTCredentialLock: chatGPTLock,
                   session: session, environment: [:])
     }
 }
@@ -95,6 +101,359 @@ final class ByteModelTests: XCTestCase {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
         XCTAssertFalse(model.isStreaming, "The response should settle within five seconds.")
+    }
+
+    @MainActor
+    private func seedChatGPTAccount(_ f: Fixture, expired: Bool = false) throws -> ChatGPTAccount {
+        let tokens = ChatGPTTokens(accessToken: "test-access", refreshToken: "test-refresh", idToken: "test-id",
+            expiresAt: expired ? Date.distantPast : Date().addingTimeInterval(3600),
+            scopes: ["resource.invoke", "chatgpt.tokens.use.direct", "offline_access"])
+        let account = ChatGPTAccount(clientID: "oaiapp_byte", subject: "test-user", email: "user@example.com", tokens: tokens)
+        f.chatGPTKeys.key = String(decoding: try JSONEncoder().encode([account]), as: UTF8.self)
+        f.defaults.set("oaiapp_byte", forKey: "byte.chatGPT.account")
+        f.defaults.set("chatGPT", forKey: "byte.provider")
+        return account
+    }
+
+    @MainActor
+    private func chatGPTModel(_ f: Fixture, expired: Bool = false) throws -> ByteModel {
+        _ = try seedChatGPTAccount(f, expired: expired)
+        return f.reloaded()
+    }
+
+    @MainActor
+    private func chatGPTAuth(_ f: Fixture) -> ChatGPTAuth {
+        ChatGPTAuth(store: f.chatGPTKeys, defaults: f.defaults, session: f.session, credentialLock: f.chatGPTLock)
+    }
+
+    private let chatGPTDiscovery = #"{"issuer":"https://auth.openai.com","authorization_endpoint":"https://auth.openai.com/api/accounts/authorize","token_endpoint":"https://auth.openai.com/api/accounts/oauth/token","jwks_uri":"https://auth.openai.com/.well-known/jwks.json","revocation_endpoint":"https://auth.openai.com/api/accounts/oauth/revoke","id_token_signing_alg_values_supported":["RS256"]}"#
+
+    @MainActor
+    private func waitForModels(_ model: ByteModel) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        while model.isLoadingModels && Date() < deadline { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertFalse(model.isLoadingModels)
+        XCTAssertTrue(model.canSend)
+    }
+
+    @MainActor
+    func testChatGPTUsesAccountCatalogAndSubscriptionRoute() async throws {
+        let f = try Fixture()
+        defer { f.cleanup() }
+        var requests = 0
+        StubURLProtocol.handler = { stub in
+            XCTAssertEqual(stub.request.value(forHTTPHeaderField: "Authorization"), "Bearer test-access")
+            if stub.request.url?.path == "/v1/models" {
+                stub.reply(#"{"models":[{"slug":"hidden","display_name":"Hidden","visibility":"hide"},{"slug":"account-model","display_name":"Available model","visibility":"list"}]}"#)
+            } else {
+                requests += 1
+                XCTAssertEqual(stub.request.url?.absoluteString, "https://api.openai.com/v1/responses")
+                let body = try! JSONSerialization.jsonObject(with: stub.requestBody()!) as! [String: Any]
+                XCTAssertEqual(body["model"] as? String, "account-model")
+                XCTAssertEqual(body["store"] as? Bool, false)
+                XCTAssertEqual(body["stream"] as? Bool, true)
+                XCTAssertNil(body["max_output_tokens"])
+                stub.reply("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello from Byte\"}\n\n" +
+                    "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":12,\"output_tokens\":8}}}\n\n")
+            }
+        }
+        let model = try chatGPTModel(f)
+        defer { model.prepareForTermination() }
+        try await waitForModels(model)
+        XCTAssertEqual(model.chatGPTModels.map(\.slug), ["account-model"])
+        model.draft = "Hello"; model.send()
+        try await waitForFinish(model)
+        XCTAssertEqual(requests, 1)
+        XCTAssertNil(model.turns.last?.failure)
+        XCTAssertEqual(model.turns.last?.text, "Hello from Byte")
+        XCTAssertEqual(model.sessionInTok, 12)
+        XCTAssertEqual(model.sessionOutTok, 8)
+        XCTAssertEqual(model.sessionCost, 0)
+    }
+
+    @MainActor
+    func testChatGPTInterruptedReplyIsNotReplayedAsContext() async throws {
+        let f = try Fixture()
+        defer { f.cleanup() }
+        StubURLProtocol.handler = { stub in
+            if stub.request.url?.path == "/v1/models" {
+                stub.reply(#"{"models":[{"slug":"account-model","display_name":"Model","visibility":"list"}]}"#)
+            } else {
+                stub.reply("data: {\"type\":\"response.output_text.delta\",\"delta\":\"Partial answer\"}\n\n")
+            }
+        }
+        let model = try chatGPTModel(f)
+        defer { model.prepareForTermination() }
+        try await waitForModels(model)
+        model.draft = "Hello"; model.send()
+        try await waitForFinish(model)
+        XCTAssertEqual(model.turns.last?.text, "Partial answer")
+        XCTAssertNotNil(model.turns.last?.failure)
+        model.turns += [.init(role: .user, text: "Again"), .init(role: .byte, text: "")]
+        let input = ChatGPTRequestConfiguration.input(turns: model.turns)
+        XCTAssertEqual(input.count, 2)
+        XCTAssertTrue(input.allSatisfy { $0["role"] as? String == "user" })
+    }
+
+    @MainActor
+    func testChatGPTUsageLimitDoesNotRetryOrSwitchBilling() async throws {
+        let f = try Fixture()
+        defer { f.cleanup() }
+        var requests = 0
+        StubURLProtocol.handler = { stub in
+            if stub.request.url?.path == "/v1/models" {
+                stub.reply(#"{"models":[{"slug":"account-model","display_name":"Model","visibility":"list"}]}"#)
+            } else {
+                requests += 1
+                XCTAssertEqual(stub.request.url?.host, "api.openai.com")
+                stub.reply(#"{"error":{"code":"subscription_sharing_usage_limit_exceeded"}}"#, status: 429)
+            }
+        }
+        let model = try chatGPTModel(f)
+        defer { model.prepareForTermination() }
+        try await waitForModels(model)
+        model.draft = "Hello"; model.send()
+        try await waitForFinish(model)
+        XCTAssertEqual(requests, 1)
+        XCTAssertTrue(model.turns.last?.failure?.contains("Manage usage") == true)
+        XCTAssertEqual(model.provider, .chatGPT)
+        XCTAssertFalse(model.canSend)
+        model.retryChatGPTPlanUsage()
+        XCTAssertTrue(model.canSend)
+        XCTAssertEqual(model.sessionCost, 0)
+    }
+
+    @MainActor
+    func testConcurrentChatGPTRefreshesRotateCredentialsOnce() async throws {
+        let f = try Fixture()
+        defer { f.cleanup() }
+        var exchanges = 0
+        StubURLProtocol.handler = { stub in
+            switch stub.request.url?.path {
+            case "/.well-known/openid-configuration":
+                stub.reply(#"{"issuer":"https://auth.openai.com","authorization_endpoint":"https://auth.openai.com/api/accounts/authorize","token_endpoint":"https://auth.openai.com/api/accounts/oauth/token","jwks_uri":"https://auth.openai.com/.well-known/jwks.json","id_token_signing_alg_values_supported":["RS256"]}"#)
+            case "/api/accounts/oauth/token":
+                exchanges += 1
+                let body = String(decoding: stub.requestBody()!, as: UTF8.self)
+                XCTAssertTrue(body.contains("client_id=oaiapp_byte"))
+                XCTAssertFalse(body.contains("dynamic_agent_client"))
+                stub.reply(#"{"access_token":"renewed-access","refresh_token":"rotated-refresh","token_type":"Bearer","expires_in":3600}"#)
+            default:
+                stub.reply(#"{"models":[{"slug":"account-model","display_name":"Model","visibility":"list"}]}"#)
+            }
+        }
+        let model = try chatGPTModel(f, expired: true)
+        defer { model.prepareForTermination() }
+        async let first = model.chatGPT.accessToken(for: "oaiapp_byte")
+        async let second = model.chatGPT.accessToken(for: "oaiapp_byte")
+        let tokens = try await [first, second]
+        XCTAssertEqual(tokens, ["renewed-access", "renewed-access"])
+        XCTAssertEqual(exchanges, 1)
+        let stored = try JSONDecoder().decode([ChatGPTAccount].self, from: Data(f.chatGPTKeys.key!.utf8))
+        XCTAssertEqual(stored.first?.tokens?.refreshToken, "rotated-refresh")
+        XCTAssertEqual(stored.first?.tokens?.accessToken, "renewed-access")
+        XCTAssertEqual(stored.first?.clientID, "oaiapp_byte")
+    }
+
+    @MainActor
+    func testChatGPTInstancesReloadCredentialsAndRefreshOnce() async throws {
+        let f = try Fixture()
+        defer { f.cleanup() }
+        let account = try seedChatGPTAccount(f, expired: true)
+        let first = chatGPTAuth(f), second = chatGPTAuth(f)
+        var exchanges = 0
+        let discovery = chatGPTDiscovery
+        StubURLProtocol.handler = { stub in
+            if stub.request.url?.path == "/.well-known/openid-configuration" { stub.reply(discovery); return }
+            exchanges += 1
+            XCTAssertEqual(exchanges, 1, "A second instance must use the replacement instead of rotating the old token.")
+            stub.reply(#"{"access_token":"new-access","refresh_token":"new-refresh","token_type":"Bearer","expires_in":3600}"#)
+        }
+        async let firstToken = first.accessToken(for: account.clientID)
+        async let secondToken = second.accessToken(for: account.clientID)
+        let tokens = try await [firstToken, secondToken]
+        XCTAssertEqual(tokens, ["new-access", "new-access"])
+        XCTAssertEqual(exchanges, 1)
+        XCTAssertEqual(second.activeAccount?.tokens?.refreshToken, "new-refresh")
+        let stored = try JSONDecoder().decode([ChatGPTAccount].self, from: Data(f.chatGPTKeys.key!.utf8))
+        XCTAssertEqual(stored.first?.tokens?.refreshToken, "new-refresh")
+    }
+
+    @MainActor
+    func testChatGPTRotationSaveFailureRetainsReplacementAndLock() async throws {
+        let f = try Fixture()
+        defer { f.cleanup() }
+        let account = try seedChatGPTAccount(f, expired: true)
+        let auth = chatGPTAuth(f), peer = chatGPTAuth(f)
+        var exchanges = 0
+        let discovery = chatGPTDiscovery
+        StubURLProtocol.handler = { stub in
+            if stub.request.url?.path == "/.well-known/openid-configuration" { stub.reply(discovery); return }
+            exchanges += 1
+            XCTAssertEqual(exchanges, 1)
+            stub.reply(#"{"access_token":"replacement-access","refresh_token":"replacement-refresh","token_type":"Bearer","expires_in":3600}"#)
+        }
+        f.chatGPTKeys.failSave = true
+        do { _ = try await auth.accessToken(for: account.clientID); XCTFail("Keychain failure must pause plan usage.") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("Retry Keychain save")) }
+        XCTAssertTrue(auth.needsCredentialSave)
+        XCTAssertFalse(auth.canUsePlan)
+        do { _ = try await auth.accessToken(for: account.clientID); XCTFail("A failed retry must not return a token.") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("Retry Keychain save")) }
+        XCTAssertEqual(exchanges, 1)
+        do { _ = try await f.chatGPTLock.acquire(timeout: 0); XCTFail("The shared lock must remain held until credentials are saved.") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("Another Byte instance")) }
+        f.chatGPTKeys.failSave = false
+        try auth.retryPendingSave()
+        let recovered = try await peer.accessToken(for: account.clientID)
+        XCTAssertEqual(recovered, "replacement-access")
+        XCTAssertEqual(exchanges, 1)
+        XCTAssertFalse(auth.needsCredentialSave)
+        XCTAssertTrue(auth.canUsePlan)
+        let stored = try JSONDecoder().decode([ChatGPTAccount].self, from: Data(f.chatGPTKeys.key!.utf8))
+        XCTAssertEqual(stored.first?.tokens?.refreshToken, "replacement-refresh")
+    }
+
+    @MainActor
+    func testChatGPTRefreshRemovingPlanPermissionPreventsInference() async throws {
+        let f = try Fixture()
+        defer { f.cleanup() }
+        var inferences = 0
+        let discovery = chatGPTDiscovery
+        StubURLProtocol.handler = { stub in
+            switch stub.request.url?.path {
+            case "/v1/models":
+                stub.reply(#"{"models":[{"slug":"account-model","display_name":"Model","visibility":"list"}]}"#)
+            case "/.well-known/openid-configuration": stub.reply(discovery)
+            case "/api/accounts/oauth/token":
+                stub.reply(#"{"access_token":"identity-access","refresh_token":"identity-refresh","token_type":"Bearer","expires_in":3600,"scope":"openid profile email offline_access"}"#)
+            default:
+                inferences += 1
+                stub.reply("", status: 403)
+            }
+        }
+        let model = try chatGPTModel(f)
+        defer { model.prepareForTermination() }
+        try await waitForModels(model)
+        // Change protected storage while this instance still has an unexpired
+        // cache, then exercise the real send -> refresh -> inference path.
+        _ = try seedChatGPTAccount(f, expired: true)
+        model.draft = "Hello"; model.send()
+        try await waitForFinish(model)
+        XCTAssertEqual(inferences, 0)
+        XCTAssertFalse(model.chatGPT.canUsePlan)
+        XCTAssertTrue(model.chatGPT.isSignedIn)
+        XCTAssertFalse(model.canSend)
+        XCTAssertTrue(model.turns.last?.failure?.contains("plan usage isn't enabled") == true)
+    }
+
+    @MainActor
+    func testChatGPTRetryKeychainSaveRestoresSendingWithoutAnotherRefresh() async throws {
+        let f = try Fixture()
+        defer { f.cleanup() }
+        let discovery = chatGPTDiscovery
+        var exchanges = 0
+        StubURLProtocol.handler = { stub in
+            switch stub.request.url?.path {
+            case "/v1/models":
+                stub.reply(#"{"models":[{"slug":"account-model","display_name":"Model","visibility":"list"}]}"#)
+            case "/.well-known/openid-configuration": stub.reply(discovery)
+            case "/api/accounts/oauth/token":
+                exchanges += 1
+                stub.reply(#"{"access_token":"replacement-access","refresh_token":"replacement-refresh","token_type":"Bearer","expires_in":3600}"#)
+            default: XCTFail("A pending Keychain save must prevent inference."); stub.reply("", status: 400)
+            }
+        }
+        let model = try chatGPTModel(f)
+        defer { model.prepareForTermination() }
+        try await waitForModels(model)
+        _ = try seedChatGPTAccount(f, expired: true)
+        f.chatGPTKeys.failSave = true
+        model.draft = "Hello"; model.send()
+        try await waitForFinish(model)
+        XCTAssertTrue(model.chatGPT.needsCredentialSave)
+        XCTAssertFalse(model.canSend)
+        f.chatGPTKeys.failSave = false
+        model.retryChatGPTCredentialSave()
+        try await waitForModels(model)
+        XCTAssertEqual(exchanges, 1)
+        XCTAssertFalse(model.chatGPT.needsCredentialSave)
+        XCTAssertNil(model.connectionError)
+    }
+
+    @MainActor
+    func testChatGPTSignOutInAnotherInstanceInvalidatesCachedAccess() async throws {
+        let f = try Fixture()
+        defer { f.cleanup() }
+        let account = try seedChatGPTAccount(f)
+        let first = chatGPTAuth(f), second = chatGPTAuth(f)
+        let discovery = chatGPTDiscovery
+        StubURLProtocol.handler = { stub in
+            switch stub.request.url?.path {
+            case "/.well-known/openid-configuration": stub.reply(discovery)
+            case "/api/accounts/oauth/revoke": stub.reply("")
+            default: XCTFail("Signed-out credentials must not make provider requests."); stub.reply("", status: 401)
+            }
+        }
+        try await first.signOut()
+        do { _ = try await second.accessToken(for: account.clientID); XCTFail("The cached token must not survive another instance's sign-out.") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("Continue with ChatGPT")) }
+        XCTAssertFalse(second.isSignedIn)
+    }
+
+    @MainActor
+    func testChatGPTRefreshesPreserveOtherAccountReplacements() async throws {
+        let f = try Fixture()
+        defer { f.cleanup() }
+        let firstAccount = try seedChatGPTAccount(f, expired: true)
+        let secondAccount = ChatGPTAccount(clientID: "oaiapp_second", subject: "second", email: "second@example.com", tokens: firstAccount.tokens)
+        f.chatGPTKeys.key = String(decoding: try JSONEncoder().encode([firstAccount, secondAccount]), as: UTF8.self)
+        let first = chatGPTAuth(f), second = chatGPTAuth(f)
+        let discovery = chatGPTDiscovery
+        StubURLProtocol.handler = { stub in
+            if stub.request.url?.path == "/.well-known/openid-configuration" { stub.reply(discovery); return }
+            let body = String(decoding: stub.requestBody()!, as: UTF8.self)
+            let name = body.contains("client_id=oaiapp_second") ? "second" : "first"
+            stub.reply("{\"access_token\":\"\(name)-access\",\"refresh_token\":\"\(name)-refresh\",\"token_type\":\"Bearer\",\"expires_in\":3600}")
+        }
+        _ = try await first.accessToken(for: firstAccount.clientID)
+        _ = try await second.accessToken(for: secondAccount.clientID)
+        let stored = try JSONDecoder().decode([ChatGPTAccount].self, from: Data(f.chatGPTKeys.key!.utf8))
+        XCTAssertEqual(stored.first { $0.clientID == firstAccount.clientID }?.tokens?.refreshToken, "first-refresh")
+        XCTAssertEqual(stored.first { $0.clientID == secondAccount.clientID }?.tokens?.refreshToken, "second-refresh")
+    }
+
+    @MainActor
+    func testChatGPTSignOutRevokesPendingReplacementAfterSaveFailure() async throws {
+        let f = try Fixture()
+        defer { f.cleanup() }
+        let account = try seedChatGPTAccount(f, expired: true)
+        let auth = chatGPTAuth(f)
+        let discovery = chatGPTDiscovery
+        var revoked = false
+        StubURLProtocol.handler = { stub in
+            switch stub.request.url?.path {
+            case "/.well-known/openid-configuration": stub.reply(discovery)
+            case "/api/accounts/oauth/token":
+                stub.reply(#"{"access_token":"replacement-access","refresh_token":"replacement-refresh","token_type":"Bearer","expires_in":3600}"#)
+            case "/api/accounts/oauth/revoke":
+                let body = String(decoding: stub.requestBody()!, as: UTF8.self)
+                XCTAssertTrue(body.contains("token=replacement-refresh"))
+                revoked = true
+                stub.reply("")
+            default: XCTFail("Unexpected provider request"); stub.reply("", status: 400)
+            }
+        }
+        f.chatGPTKeys.failSave = true
+        do { _ = try await auth.accessToken(for: account.clientID); XCTFail("Expected Keychain failure.") }
+        catch { XCTAssertTrue(auth.needsCredentialSave) }
+        f.chatGPTKeys.failSave = false
+        try await auth.signOut()
+        XCTAssertTrue(revoked)
+        XCTAssertFalse(auth.isSignedIn)
+        XCTAssertFalse(auth.needsCredentialSave)
+        let stored = try JSONDecoder().decode([ChatGPTAccount].self, from: Data(f.chatGPTKeys.key!.utf8))
+        XCTAssertNil(stored.first?.tokens)
     }
 
     @MainActor

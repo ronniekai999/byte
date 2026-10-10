@@ -26,6 +26,9 @@ CODE REVIEW IMPROVEMENTS
 
 NEXT
 ----
+[x] ChatGPT plan sign-in for the local app, live account model catalog, and provider switching
+[ ] Validate ChatGPT browser sign-in, Keychain, refresh, and streaming on macOS
+[ ] Obtain Anthropic approval before adding Claude subscription sign-in
 [ ] Global shortcut to open and focus chat
 [ ] Context budget, optional thread summary, and cost controls
 [ ] Check model availability; maintain capabilities and pricing together
