@@ -21,10 +21,10 @@ final class OAuthLoopbackListener {
         let listener = try NWListener(using: parameters)
         self.listener = listener
         listener.newConnectionHandler = { [weak self] connection in
-            Task { @MainActor in self?.accept(connection) }
+            Task { @MainActor [weak self] in self?.accept(connection) }
         }
         listener.stateUpdateHandler = { [weak self, weak listener] state in
-            Task { @MainActor in
+            Task { @MainActor [weak self, weak listener] in
                 guard let self, let listener else { return }
                 switch state {
                 case .ready:
@@ -104,7 +104,7 @@ final class OAuthLoopbackListener {
 
     private func receive(_ connection: NWConnection, id: UUID, accumulated: Data) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] data, _, done, error in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 guard let self, self.connections[id] != nil else { return }
                 let received = accumulated + (data ?? Data())
                 guard received.count <= 16_384, error == nil else {
@@ -151,7 +151,7 @@ final class OAuthLoopbackListener {
         let header = "HTTP/1.1 \(status) \(status == 200 ? "OK" : "Bad Request")\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: \(body.count)\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
         connection.send(content: Data(header.utf8) + body, completion: .contentProcessed { [weak self] _ in
             connection.cancel()
-            Task { @MainActor in self?.connections.removeValue(forKey: id) }
+            Task { @MainActor [weak self] in self?.connections.removeValue(forKey: id) }
         })
     }
 }
