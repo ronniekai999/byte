@@ -841,6 +841,9 @@ final class ByteModel: ObservableObject {
         guard !isConnecting else { return }
         if provider == .chatGPT {
             catalogTask?.cancel()
+            catalogTask = nil
+            isLoadingModels = false
+            connectionError = nil
             isConnecting = true
             connectionTask = Task {
                 defer { isConnecting = false; connectionTask = nil }

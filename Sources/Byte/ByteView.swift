@@ -1239,11 +1239,24 @@ struct SettingsView: View {
     @AppStorage("byte.puns") private var puns = 2
     @AppStorage("byte.model") private var model = "claude-sonnet-4-6"
     @AppStorage("byte.effort") private var effort = "high"
-    @State private var launchAtLogin = SettingsView.loginIsOn
+    @State private var loginStatus = SMAppService.mainApp.status
+    @State private var loginError: String?
 
-    private static var loginIsOn: Bool {
-        let s = SMAppService.mainApp.status
-        return s == .enabled || s == .requiresApproval
+    private var launchAtLogin: Binding<Bool> {
+        Binding(get: { loginStatus == .enabled || loginStatus == .requiresApproval }, set: { want in
+            let service = SMAppService.mainApp
+            do {
+                if want {
+                    if service.status != .enabled && service.status != .requiresApproval { try service.register() }
+                } else if service.status == .enabled || service.status == .requiresApproval {
+                    try service.unregister()
+                }
+                loginError = nil
+            } catch {
+                loginError = "Couldn't change launch at login. \(error.localizedDescription)"
+            }
+            loginStatus = service.status
+        })
     }
 
     var body: some View {
@@ -1257,18 +1270,18 @@ struct SettingsView: View {
             Toggle("Web search", isOn: $webSearch)
             Toggle("Sound effects", isOn: $sounds)
             Toggle("Random check-ins", isOn: $checkins)
-            Toggle("Launch at login", isOn: $launchAtLogin)
-                .onChange(of: launchAtLogin) { _, want in
-                    do {
-                        if want {
-                            if SMAppService.mainApp.status != .enabled { try SMAppService.mainApp.register() }
-                        } else {
-                            if SMAppService.mainApp.status == .enabled { try SMAppService.mainApp.unregister() }
-                        }
-                    } catch {
-                        launchAtLogin = SettingsView.loginIsOn   // revert to truth
-                    }
-                }
+            Toggle("Launch at login", isOn: launchAtLogin)
+            if loginStatus == .requiresApproval {
+                Text("Allow Byte in Login Items to finish enabling launch at login.")
+                    .font(.system(size: 10, design: .rounded)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Open Login Items") { SMAppService.openSystemSettingsLoginItems() }
+            }
+            if let loginError {
+                Text(loginError).foregroundStyle(.red)
+                    .font(.system(size: 10, design: .rounded))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             Picker("Puns", selection: $puns) {
                 Text("Off").tag(0)
@@ -1277,7 +1290,9 @@ struct SettingsView: View {
             }
             if byte.provider == .chatGPT {
                 Picker("Model", selection: Binding(get: { byte.model }, set: { byte.selectChatGPTModel($0) })) {
-                    if byte.chatGPTModels.isEmpty { Text("Loading models…").tag(byte.model) }
+                    if byte.chatGPTModels.isEmpty {
+                        Text(byte.isLoadingModels ? "Loading models…" : "No models loaded").tag(byte.model)
+                    }
                     ForEach(byte.chatGPTModels) { choice in Text(choice.display_name).tag(choice.slug) }
                 }
                 .disabled(byte.isStreaming || byte.isLoadingModels || byte.chatGPTModels.isEmpty)
@@ -1307,6 +1322,10 @@ struct SettingsView: View {
         .font(.system(size: 12, design: .rounded))
         .padding(14)
         .frame(width: 300)
+        .onAppear { loginStatus = SMAppService.mainApp.status }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            loginStatus = SMAppService.mainApp.status
+        }
     }
 }
 

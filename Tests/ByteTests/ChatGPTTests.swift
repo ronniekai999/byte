@@ -65,6 +65,10 @@ final class ChatGPTTests: XCTestCase {
         let url = pending.authorizationURL(endpoint: URL(string: "https://auth.openai.com/api/accounts/authorize")!)
         XCTAssertFalse(url.absoluteString.contains("agent_name_hint"))
         XCTAssertTrue(url.absoluteString.contains("prompt=consent"))
+        let recovering = try ChatGPTOAuthAttempt(redirectURI: callbackURL, hostID: "urn:uuid:test-host",
+                                                account: nil, registeredClientID: "oaiapp_issued")
+        XCTAssertEqual(try recovering.callback(callback(recovering)).clientID, "oaiapp_issued")
+        XCTAssertThrowsError(try recovering.callback(callback(recovering, fields: [.init(name: "client_id", value: "oaiapp_other")])))
     }
 
     func testIDTokenVerificationRejectsTamperingAndWrongClaims() throws {

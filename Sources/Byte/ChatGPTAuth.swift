@@ -51,15 +51,18 @@ struct ChatGPTOAuthAttempt {
     let redirectURI: URL
     let hostID: String
     let account: ChatGPTAccount?
+    let clientID: String?
     let expiresAt: Date
 
-    init(redirectURI: URL, hostID: String, account: ChatGPTAccount?, now: Date = Date()) throws {
+    init(redirectURI: URL, hostID: String, account: ChatGPTAccount?,
+         registeredClientID: String? = nil, now: Date = Date()) throws {
         state = try Self.randomValue()
         nonce = try Self.randomValue()
         verifier = try Self.randomValue()
         self.redirectURI = redirectURI
         self.hostID = hostID
         self.account = account
+        clientID = account?.clientID ?? registeredClientID
         expiresAt = now.addingTimeInterval(600)
     }
 
@@ -68,7 +71,7 @@ struct ChatGPTOAuthAttempt {
     func authorizationURL(endpoint: URL) -> URL {
         var url = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)!
         var fields = [
-            "client_id": account?.clientID ?? "dynamic_agent_client",
+            "client_id": clientID ?? "dynamic_agent_client",
             "ext_agent_host_id": hostID, "response_type": "code",
             "redirect_uri": redirectURI.absoluteString,
             "scope": ChatGPTAuth.scopes, "resource": ChatGPTAuth.resource,
@@ -79,7 +82,7 @@ struct ChatGPTOAuthAttempt {
             fields["id_token_hint"] = account.tokens?.idToken
             fields["login_hint"] = account.email
             if account.tokens?.canUsePlan != true { fields["prompt"] = "consent" }
-        } else {
+        } else if clientID == nil {
             fields["agent_name_hint"] = "Byte"
         }
         url.queryItems = fields.sorted { $0.key < $1.key }.map { URLQueryItem(name: $0.key, value: $0.value) }
@@ -107,13 +110,13 @@ struct ChatGPTOAuthAttempt {
         if values["error"] != nil {
             throw ChatGPTConnectionError("ChatGPT sign-in was declined. Your existing connection was kept.")
         }
-        let clientID = values["client_id"] ?? account?.clientID
+        let returnedClientID = values["client_id"] ?? clientID
         guard let code = values["code"], !code.isEmpty,
-              let clientID, !clientID.isEmpty, clientID != "dynamic_agent_client",
-              account == nil || account?.clientID == clientID else {
+              let returnedClientID, !returnedClientID.isEmpty, returnedClientID != "dynamic_agent_client",
+              clientID == nil || clientID == returnedClientID else {
             throw ChatGPTConnectionError("ChatGPT did not return the expected Byte registration. Try signing in again.")
         }
-        return (code, clientID)
+        return (code, returnedClientID)
     }
 
     private static func randomValue() throws -> String {
@@ -265,9 +268,7 @@ final class ChatGPTAuth: ObservableObject {
         guard !isSigningIn else { return }
         isSigningIn = true
         error = nil
-        let listener = OAuthLoopbackListener()
-        self.listener = listener
-        defer { listener.cancel(); self.listener = nil; isSigningIn = false }
+        defer { isSigningIn = false }
         let readLease = try await credentialsLease()
         let oldAccount: ChatGPTAccount?
         do {
@@ -279,34 +280,50 @@ final class ChatGPTAuth: ObservableObject {
         } catch { release(readLease); throw error }
         release(readLease)
         let config = try await configuration()
-        let redirectURI = try await listener.start()
-        let attempt = try ChatGPTOAuthAttempt(redirectURI: redirectURI, hostID: hostID, account: oldAccount)
-        listener.expectedState = attempt.state
-        try Task.checkCancellation()
-        guard openBrowser(attempt.authorizationURL(endpoint: config.authorization_endpoint)) else {
-            throw ChatGPTConnectionError("Couldn't open your browser to sign in to ChatGPT.")
+        var registeredClientID = oldAccount?.clientID
+        // An expired/consumed code needs a fresh browser transaction, not another
+        // dynamic registration. Bound recovery so a provider failure cannot loop.
+        for authorization in 0..<2 {
+            let listener = OAuthLoopbackListener()
+            self.listener = listener
+            defer { listener.cancel(); self.listener = nil }
+            let redirectURI = try await listener.start()
+            let attempt = try ChatGPTOAuthAttempt(redirectURI: redirectURI, hostID: hostID,
+                account: oldAccount, registeredClientID: registeredClientID)
+            listener.expectedState = attempt.state
+            try Task.checkCancellation()
+            guard openBrowser(attempt.authorizationURL(endpoint: config.authorization_endpoint)) else {
+                throw ChatGPTConnectionError("Couldn't open your browser to sign in to ChatGPT.")
+            }
+            let callback = try attempt.callback(try await listener.waitForCallback())
+            let lease = try await credentialsLease()
+            defer { release(lease) }
+            try reloadAccounts()
+            let response: TokenResponse
+            do {
+                response = try await exchange(endpoint: config.token_endpoint, fields: [
+                    "grant_type": "authorization_code", "client_id": callback.clientID,
+                    "code": callback.code, "code_verifier": attempt.verifier,
+                    "redirect_uri": redirectURI.absoluteString, "resource": Self.resource
+                ])
+            } catch let error as ChatGPTAuthorizationHTTPError where error.code == "invalid_grant" && authorization == 0 {
+                registeredClientID = callback.clientID
+                continue
+            }
+            let jwks = try await get(config.jwks_uri)
+            let identity = try ChatGPTIdentity.verify(response.id_token ?? "", jwks: jwks,
+                algorithms: config.id_token_signing_alg_values_supported,
+                clientID: callback.clientID, nonce: attempt.nonce)
+            guard oldAccount == nil || oldAccount?.subject == identity.subject else {
+                throw ChatGPTConnectionError("That sign-in belongs to a different account. Use Add account instead.")
+            }
+            let tokens = try response.tokens(previous: nil)
+            try Task.checkCancellation()
+            try save(ChatGPTAccount(clientID: callback.clientID, subject: identity.subject,
+                email: identity.email, tokens: tokens), lease: lease, selectedClientID: callback.clientID,
+                notice: tokens.canUsePlan ? nil : Self.planPermissionMessage)
+            return
         }
-        let callback = try attempt.callback(try await listener.waitForCallback())
-        let lease = try await credentialsLease()
-        defer { release(lease) }
-        try reloadAccounts()
-        let response = try await exchange(endpoint: config.token_endpoint, fields: [
-            "grant_type": "authorization_code", "client_id": callback.clientID,
-            "code": callback.code, "code_verifier": attempt.verifier,
-            "redirect_uri": redirectURI.absoluteString, "resource": Self.resource
-        ])
-        let jwks = try await get(config.jwks_uri)
-        let identity = try ChatGPTIdentity.verify(response.id_token ?? "", jwks: jwks,
-            algorithms: config.id_token_signing_alg_values_supported,
-            clientID: callback.clientID, nonce: attempt.nonce)
-        guard oldAccount == nil || oldAccount?.subject == identity.subject else {
-            throw ChatGPTConnectionError("That sign-in belongs to a different account. Use Add account instead.")
-        }
-        let tokens = try response.tokens(previous: nil)
-        try Task.checkCancellation()
-        try save(ChatGPTAccount(clientID: callback.clientID, subject: identity.subject,
-            email: identity.email, tokens: tokens), lease: lease, selectedClientID: callback.clientID,
-            notice: tokens.canUsePlan ? nil : Self.planPermissionMessage)
     }
 
     func cancelSignIn() { listener?.cancel() }
@@ -355,7 +372,8 @@ final class ChatGPTAuth: ObservableObject {
     /// Keep the verified registration and host identifier for returning sign-in.
     func signOut() async throws {
         guard let clientID = activeClientID else { return }
-        refreshes[clientID]?.cancel()
+        // A refresh may already have rotated the server's token. Let it settle
+        // and retain its replacement before choosing the token to revoke.
         if let refresh = refreshes[clientID] { _ = try? await refresh.value }
         let lease = try await credentialsLease(flushPending: false)
         defer { release(lease) }
